@@ -1,0 +1,292 @@
+openapi: 3.0.3
+info:
+  title: device-api OTA Callback Endpoints
+  description: |
+    REST API callback endpoints on device-api that updater calls to report OTA progress and errors.
+
+    This API defines the contract for:
+    - POST /ota/report: Receive status updates from updater
+
+    **Architecture**:
+    - device-api runs HTTP server on port 9080 (existing Go service)
+    - Updater (port 12315) POSTs callbacks to device-api every 5% progress
+    - Callbacks MUST be non-blocking with <500ms latency (FR-016)
+
+    **Callback Triggers**:
+    - Progress changes by 5% during download stage
+    - Stage transitions (downloading → verifying → installing → success/failed)
+    - Error detected (immediate callback)
+
+    **HTTP Conventions**:
+    - HTTP methods: Only POST (receive callback)
+    - HTTP status code: Always returns 200 OK
+    - Application-level status codes: Returned in response body `code` field
+      - 200: Callback received successfully
+      - 400: Validation error
+      - 500: Internal error (device-api failure)
+
+    **Related Spec**: specs/001-updater-core/spec.md (FR-016, FR-020)
+  version: 1.0.0
+  contact:
+    name: TOPE Device API Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:9080/api/v1.0
+    description: Local device-api service (hardcoded port)
+
+tags:
+  - name: ota-callbacks
+    description: OTA status callback endpoints (called by updater)
+
+paths:
+  /ota/report:
+    post:
+      tags:
+        - ota-callbacks
+      summary: Receive OTA status update from updater
+      description: |
+        Receives progress, stage transitions, and error reports from updater service.
+
+        **Caller**: Updater service (port 12315)
+
+        **Frequency** (FR-016):
+        - Every 5% progress change during download stage
+        - Every stage transition
+        - Immediately upon error detection
+
+        **Performance Requirements**:
+        - MUST respond within 500ms (non-blocking)
+        - Updater SHOULD NOT block on callback response
+        - Failed callbacks SHOULD be logged but not abort update
+
+        **device-api Responsibilities**:
+        - Store status in memory/database for cloud sync
+        - Forward status to cloud backend via MQTT/HTTP
+        - Expose status to local web UI (if applicable)
+        - Log received status for diagnostics
+
+        **No Response Data Required**:
+        - device-api only needs to acknowledge receipt (200 OK)
+        - Updater does not consume response body
+      operationId: reportOTAStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPayload'
+            examples:
+              download_started:
+                summary: Download started (0%)
+                value:
+                  stage: "downloading"
+                  progress: 0
+                  message: "Starting download..."
+                  error: null
+              download_progress:
+                summary: Download in progress (45%)
+                value:
+                  stage: "downloading"
+                  progress: 45
+                  message: "Downloading package... 47.2 MB / 104.9 MB"
+                  error: null
+              verifying:
+                summary: MD5 verification started
+                value:
+                  stage: "verifying"
+                  progress: 100
+                  message: "Verifying package integrity..."
+                  error: null
+              toInstall:
+                summary: Package verified and ready for installation
+                value:
+                  stage: "toInstall"
+                  progress: 100
+                  message: "Package verified successfully, ready for installation"
+                  error: null
+              installing:
+                summary: Installation in progress
+                value:
+                  stage: "installing"
+                  progress: 50
+                  message: "Deploying module device-api (2/3)"
+                  error: null
+              success:
+                summary: Update completed successfully
+                value:
+                  stage: "success"
+                  progress: 100
+                  message: "Update completed successfully"
+                  error: null
+              failed_md5:
+                summary: Update failed due to MD5 mismatch
+                value:
+                  stage: "failed"
+                  progress: 100
+                  message: "Update failed"
+                  error: "MD5_MISMATCH: expected a1b2c3d4..., got e5f6g7h8..."
+              failed_disk:
+                summary: Update failed due to disk full
+                value:
+                  stage: "failed"
+                  progress: 32
+                  message: "Update failed"
+                  error: "DISK_FULL: No space left on device (33.5 MB / 100 MB downloaded)"
+              failed_manifest:
+                summary: Update failed due to invalid manifest
+                value:
+                  stage: "failed"
+                  progress: 100
+                  message: "Update failed"
+                  error: "INVALID_MANIFEST: Missing required field 'modules' in manifest.json"
+              failed_download:
+                summary: Update failed due to download error
+                value:
+                  stage: "failed"
+                  progress: 67
+                  message: "Update failed"
+                  error: "DOWNLOAD_FAILED: HTTP 503 Service Unavailable after 3 retries"
+              failed_process:
+                summary: Update failed due to process kill failure
+                value:
+                  stage: "failed"
+                  progress: 80
+                  message: "Update failed"
+                  error: "PROCESS_KILL_FAILED: Unable to terminate process 'klippy' (PID 1234) after SIGKILL"
+              failed_deployment:
+                summary: Update failed due to deployment error
+                value:
+                  stage: "failed"
+                  progress: 90
+                  message: "Update failed"
+                  error: "DEPLOYMENT_FAILED: Atomic rename failed for /opt/tope/device-api/device-api: Permission denied"
+      responses:
+        '200':
+          description: Always returns 200 OK (check `code` field in body for actual status)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AckResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                success:
+                  summary: Callback received and acknowledged successfully
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      status: "received"
+                validation_error:
+                  summary: Invalid stage value
+                  value:
+                    code: 400
+                    msg: "VALIDATION_ERROR: stage must be one of: idle, downloading, verifying, installing, rebooting, success, failed"
+                internal_error:
+                  summary: device-api internal failure
+                  value:
+                    code: 500
+                    msg: "INTERNAL_ERROR: Failed to persist OTA status to database"
+
+components:
+  schemas:
+    ReportPayload:
+      type: object
+      required:
+        - stage
+        - progress
+        - message
+        - error
+      properties:
+        stage:
+          type: string
+          enum:
+            - idle
+            - downloading
+            - verifying
+            - toInstall
+            - installing
+            - rebooting
+            - success
+            - failed
+          description: Current OTA lifecycle stage
+          example: "downloading"
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage completion (0-100)
+          example: 45
+        message:
+          type: string
+          description: Human-readable status description (for display in UI or logs)
+          example: "Downloading package... 47.2 MB / 104.9 MB"
+        error:
+          type: string
+          nullable: true
+          description: |
+            Error code and detailed message if stage == "failed", null otherwise.
+
+            **Error Codes** (from FR-005, FR-020):
+            - `MD5_MISMATCH`: MD5 hash verification failed
+            - `DISK_FULL`: Insufficient disk space during download
+            - `INVALID_MANIFEST`: Malformed or missing manifest.json
+            - `DOWNLOAD_FAILED`: HTTP download failed after retries
+            - `PROCESS_KILL_FAILED`: Unable to terminate process even with SIGKILL
+            - `DEPLOYMENT_FAILED`: File deployment or atomic rename failed
+
+            **Format**: `ERROR_CODE: detailed error message`
+
+            **Examples**:
+            - `"MD5_MISMATCH: expected a1b2c3d4e5f6g7h8, got e5f6g7h8i9j0k1l2"`
+            - `"DISK_FULL: No space left on device (33.5 MB / 100 MB downloaded)"`
+            - `"DOWNLOAD_FAILED: HTTP 503 Service Unavailable after 3 retries"`
+          example: null
+
+    AckResponse:
+      type: object
+      required:
+        - code
+        - msg
+      properties:
+        code:
+          type: integer
+          description: Application-level status code (200 = success)
+          enum: [200]
+          example: 200
+        msg:
+          type: string
+          description: Success message
+          example: "success"
+        data:
+          type: object
+          description: Optional response data
+          properties:
+            status:
+              type: string
+              enum:
+                - received
+              description: Acknowledgment status
+              example: "received"
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - msg
+      properties:
+        code:
+          type: integer
+          description: Application-level error code (400/500)
+          enum: [400, 500]
+          example: 400
+        msg:
+          type: string
+          description: Error message with error code prefix
+          example: "VALIDATION_ERROR: stage must be one of: idle, downloading, verifying, installing, rebooting, success, failed"
+
+  securitySchemes: {}
+
+security: []

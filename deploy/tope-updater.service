@@ -1,0 +1,39 @@
+[Unit]
+Description=TOPE OTA Updater Service
+Documentation=https://github.com/tope/updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tope/updater
+ExecStart=/opt/tope/updater/.venv/bin/python -m updater.main
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits (Constitution Principle IX: <50MB RAM)
+MemoryMax=100M
+CPUQuota=50%
+
+# Security hardening
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/tope/updater/tmp /opt/tope/updater/logs /opt/tope/updater/backups /opt/tope
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_KILL CAP_FOWNER CAP_CHOWN CAP_DAC_OVERRIDE
+
+# Graceful shutdown (30s for current operation to complete)
+TimeoutStopSec=30
+KillSignal=SIGTERM
+KillMode=mixed
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tope-updater
+
+[Install]
+WantedBy=multi-user.target

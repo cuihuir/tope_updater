@@ -1,0 +1,499 @@
+openapi: 3.0.3
+info:
+  title: TOPE Updater HTTP API
+  description: |
+    REST API for OTA updater service running on embedded 3D printer devices.
+
+    This API provides three endpoints:
+    - POST /download: Trigger async package download
+    - POST /update: Trigger async installation
+    - GET /progress: Query current status (for ota-gui polling)
+
+    **Architecture**:
+    - Updater runs HTTP server on port 12315
+    - device-api (port 9080) calls /download and /update endpoints
+    - ota-gui polls /progress endpoint every 500ms
+
+    **HTTP Conventions**:
+    - HTTP methods: Only GET (query) and POST (command)
+    - HTTP status code: Always returns 200 OK
+    - Application-level status codes: Returned in response body `code` field
+      - 200: Success
+      - 400: Validation error
+      - 404: Resource not found
+      - 409: Operation conflict
+      - 410: Resource expired (package exceeded 24-hour trust window)
+      - 500: Internal error (download failed, MD5 mismatch, etc.)
+
+    **Related Spec**: specs/001-updater-core/spec.md (FR-001, FR-001a, FR-001b, FR-001c)
+  version: 1.0.0
+  contact:
+    name: TOPE Updater Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:12315/api/v1.0
+    description: Local updater service (hardcoded port)
+
+tags:
+  - name: commands
+    description: Command endpoints (POST) for triggering async operations
+  - name: status
+    description: Status query endpoints (GET) for polling current state
+
+paths:
+  /download:
+    post:
+      tags:
+        - commands
+      summary: Trigger package download
+      description: |
+        Initiates asynchronous download of OTA package from cloud storage.
+
+        **Idempotency** (FR-001a):
+        - If state.json exists for same package_url, resumes existing download
+        - Returns 200 OK immediately, download proceeds in background
+
+        **Background Behavior**:
+        - Downloads package to ./tmp/<package_name>
+        - Supports HTTP Range-based resumable downloads
+        - Updates progress via callbacks to device-api every 5%
+        - Computes MD5 hash after download completes
+        - Transitions to "verifying" stage automatically
+
+        **Error Handling**:
+        - Network failures: Retry with exponential backoff (max 3 attempts)
+        - Disk full: Report DISK_FULL error, abort
+        - MD5 mismatch: Report MD5_MISMATCH error, delete file
+      operationId: downloadPackage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadRequest'
+            examples:
+              typical_update:
+                summary: Typical 100MB update package
+                value:
+                  version: "1.2.3"
+                  package_url: "https://s3.example.com/ota/tope-update-1.2.3.zip"
+                  package_name: "tope-update-1.2.3.zip"
+                  package_size: 104857600
+                  package_md5: "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+      responses:
+        '200':
+          description: Always returns 200 OK (check `code` field in body for actual status)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                success:
+                  summary: Download initiated successfully
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      status: "downloading"
+                invalid_md5:
+                  summary: Invalid MD5 format (validation error)
+                  value:
+                    code: 400
+                    msg: "VALIDATION_ERROR: package_md5 must be 32-character hexadecimal string"
+                invalid_url:
+                  summary: Non-HTTPS URL (validation error)
+                  value:
+                    code: 400
+                    msg: "VALIDATION_ERROR: package_url must use HTTPS protocol"
+                operation_in_progress:
+                  summary: Another operation already in progress
+                  value:
+                    code: 409
+                    msg: "OPERATION_IN_PROGRESS: Cannot start download, installation in progress"
+                internal_error:
+                  summary: Internal server error
+                  value:
+                    code: 500
+                    msg: "INTERNAL_ERROR: Failed to initialize download service"
+
+  /update:
+    post:
+      tags:
+        - commands
+      summary: Trigger package installation
+      description: |
+        Initiates asynchronous installation of previously downloaded package.
+
+        **Preconditions** (FR-001b):
+        - Package MUST be downloaded and verified (stage == "toInstall")
+        - MD5 verification MUST have passed
+        - Package MUST NOT be expired (verified_at + 24h > current_time)
+        - Error codes:
+          - 409 Conflict: Download incomplete, verification pending, or another operation in progress
+          - 410 Gone: Package exceeded 24-hour trust window
+
+        **Background Behavior**:
+        1. Launch OTA-GUI (if /opt/tope/ota-gui exists) to mask original GUI
+        2. Extract ZIP package to ./tmp/extracted/
+        3. Parse manifest.json to get module list
+        4. For each module in manifest order:
+           - Send SIGTERM to process (if process_name specified)
+           - Wait 10 seconds for graceful shutdown
+           - Send SIGKILL if still running
+           - Write updated file to temp location
+           - Verify MD5 of temp file
+           - Atomic rename to target destination
+        5. Restart services in restart_order (device-api first)
+        6. Cleanup temp files, delete state.json
+        7. Transition to "success" stage
+
+        **Error Handling**:
+        - Process kill failure: Report PROCESS_KILL_FAILED, continue with other modules
+        - Deployment failure: Attempt rollback, report DEPLOYMENT_FAILED
+      operationId: installPackage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRequest'
+            example:
+              version: "1.2.3"
+      responses:
+        '200':
+          description: Always returns 200 OK (check `code` field in body for actual status)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                success:
+                  summary: Installation initiated successfully
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      status: "installing"
+                validation_error:
+                  summary: Invalid version format
+                  value:
+                    code: 400
+                    msg: "VALIDATION_ERROR: version must match semantic versioning pattern"
+                download_incomplete:
+                  summary: Package not downloaded
+                  value:
+                    code: 409
+                    msg: "DOWNLOAD_INCOMPLETE: Cannot install, package download not completed"
+                md5_not_verified:
+                  summary: MD5 verification pending
+                  value:
+                    code: 409
+                    msg: "MD5_NOT_VERIFIED: Cannot install, MD5 verification in progress"
+                operation_in_progress:
+                  summary: Another operation active
+                  value:
+                    code: 409
+                    msg: "OPERATION_IN_PROGRESS: Cannot install, another installation in progress"
+                package_expired:
+                  summary: Package exceeded 24-hour trust window
+                  value:
+                    code: 410
+                    msg: "PACKAGE_EXPIRED: Package verified at 2025-11-26T10:30:00Z has exceeded 24-hour trust window, please re-download"
+                internal_error:
+                  summary: Internal server error
+                  value:
+                    code: 500
+                    msg: "INTERNAL_ERROR: Failed to initialize installation service"
+
+  /progress:
+    get:
+      tags:
+        - status
+      summary: Query current OTA status
+      description: |
+        Returns current stage, progress percentage, and error information.
+
+        **Performance** (FR-001c):
+        - MUST respond within 100ms
+        - Optimized for high-frequency polling (ota-gui polls every 500ms)
+
+        **Stage Values**:
+        - idle: No operation in progress
+        - downloading: Package download in progress
+        - verifying: MD5 verification in progress
+        - toInstall: Package verified and ready for installation (waiting for POST /update)
+        - installing: File deployment and process restart in progress
+        - rebooting: System reboot triggered (optional)
+        - success: Update completed successfully
+        - failed: Update failed (see error field)
+
+        **Progress Values**:
+        - 0-100: Percentage completion
+        - downloading stage: Based on bytes_downloaded / package_size
+        - verifying stage: 0-100 during MD5 computation
+        - toInstall stage: 100 (verification complete)
+        - installing stage: Based on modules_deployed / total_modules
+      operationId: getProgress
+      responses:
+        '200':
+          description: Always returns 200 OK (check `code` field in body for actual status)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ProgressResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                idle:
+                  summary: No operation in progress
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "idle"
+                      progress: 0
+                      message: "Updater ready"
+                      error: null
+                downloading:
+                  summary: Download in progress at 45%
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "downloading"
+                      progress: 45
+                      message: "Downloading package... 47.2 MB / 104.9 MB"
+                      error: null
+                verifying:
+                  summary: MD5 verification in progress
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "verifying"
+                      progress: 60
+                      message: "Verifying package integrity..."
+                      error: null
+                toInstall:
+                  summary: Package verified and ready for installation
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "toInstall"
+                      progress: 100
+                      message: "Package verified successfully, ready for installation"
+                      error: null
+                installing:
+                  summary: Installation in progress
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "installing"
+                      progress: 75
+                      message: "Deploying module device-api (2/3)"
+                      error: null
+                success:
+                  summary: Update completed successfully
+                  value:
+                    code: 200
+                    msg: "success"
+                    data:
+                      stage: "success"
+                      progress: 100
+                      message: "Update completed successfully"
+                      error: null
+                failed_md5:
+                  summary: Update failed due to MD5 mismatch
+                  value:
+                    code: 500
+                    msg: "MD5_MISMATCH: expected a1b2c3d4..., got e5f6g7h8..."
+                    stage: "failed"
+                    progress: 100
+                failed_disk:
+                  summary: Update failed due to disk full
+                  value:
+                    code: 500
+                    msg: "DISK_FULL: No space left on device (33.5 MB / 100 MB downloaded)"
+                    stage: "failed"
+                    progress: 32
+                internal_error:
+                  summary: Internal server error
+                  value:
+                    code: 500
+                    msg: "INTERNAL_ERROR: Failed to retrieve status"
+
+components:
+  schemas:
+    DownloadRequest:
+      type: object
+      required:
+        - version
+        - package_url
+        - package_name
+        - package_size
+        - package_md5
+      properties:
+        version:
+          type: string
+          pattern: '^\d+\.\d+\.\d+$'
+          description: Semantic version identifier (e.g., "1.2.3")
+          example: "1.2.3"
+        package_url:
+          type: string
+          format: uri
+          pattern: '^https://.+'
+          description: HTTPS URL to download package from S3-compatible storage
+          example: "https://s3.example.com/ota/tope-update-1.2.3.zip"
+        package_name:
+          type: string
+          description: Filename of package (used for local storage)
+          example: "tope-update-1.2.3.zip"
+        package_size:
+          type: integer
+          minimum: 1
+          description: Total size in bytes
+          example: 104857600
+        package_md5:
+          type: string
+          pattern: '^[a-f0-9]{32}$'
+          description: Expected MD5 hash (32-character hexadecimal string)
+          example: "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+
+    UpdateRequest:
+      type: object
+      required:
+        - version
+      properties:
+        version:
+          type: string
+          pattern: '^\d+\.\d+\.\d+$'
+          description: Version to install (must match downloaded package version)
+          example: "1.2.3"
+
+    ProgressResponse:
+      type: object
+      required:
+        - code
+        - msg
+        - data
+      properties:
+        code:
+          type: integer
+          description: Application-level status code (200 = success, 500 = error)
+          enum: [200, 500]
+          example: 200
+        msg:
+          type: string
+          description: Status message or error description
+          example: "success"
+        data:
+          type: object
+          required:
+            - stage
+            - progress
+            - message
+            - error
+          properties:
+            stage:
+              type: string
+              enum:
+                - idle
+                - downloading
+                - verifying
+                - toInstall
+                - installing
+                - rebooting
+                - success
+                - failed
+              description: Current lifecycle stage
+              example: "downloading"
+            progress:
+              type: integer
+              minimum: 0
+              maximum: 100
+              description: Percentage completion (0-100)
+              example: 45
+            message:
+              type: string
+              description: Human-readable status description
+              example: "Downloading package... 47.2 MB / 104.9 MB"
+            error:
+              type: string
+              nullable: true
+              description: |
+                Error code and message if stage == "failed", null otherwise.
+
+                Error codes:
+                - MD5_MISMATCH: MD5 hash verification failed
+                - DISK_FULL: Insufficient disk space during download
+                - INVALID_MANIFEST: Malformed or missing manifest.json
+                - DOWNLOAD_FAILED: HTTP download failed after retries
+                - PROCESS_KILL_FAILED: Unable to terminate process
+                - DEPLOYMENT_FAILED: File deployment failed
+              example: null
+        stage:
+          type: string
+          description: Current stage (for failed responses at root level)
+          example: "failed"
+        progress:
+          type: integer
+          description: Current progress (for failed responses at root level)
+          example: 100
+
+    SuccessResponse:
+      type: object
+      required:
+        - code
+        - msg
+      properties:
+        code:
+          type: integer
+          description: Application-level status code (200 = success)
+          enum: [200]
+          example: 200
+        msg:
+          type: string
+          description: Success message
+          example: "success"
+        data:
+          type: object
+          description: Optional response data
+          additionalProperties: true
+          example:
+            status: "downloading"
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - msg
+      properties:
+        code:
+          type: integer
+          description: Application-level error code (400/404/409/410/500)
+          enum: [400, 404, 409, 410, 500]
+          example: 400
+        msg:
+          type: string
+          description: Error message with error code prefix
+          example: "VALIDATION_ERROR: package_md5 must be 32-character hexadecimal string"
+        stage:
+          type: string
+          description: Current stage (for operation state errors)
+          example: "failed"
+        progress:
+          type: integer
+          description: Current progress (for operation state errors)
+          example: 32
+
+  securitySchemes: {}
+
+security: []
