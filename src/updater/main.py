@@ -9,6 +9,7 @@ import uvicorn
 
 from updater.utils.logging import setup_logger
 from updater.services.state_manager import StateManager
+from updater.models.status import StageEnum
 from updater.api.routes import router
 
 
@@ -58,14 +59,35 @@ async def lifespan(app: FastAPI):
             state_manager.delete_state()
             state_manager.reset()
             logger.info("Expired package cleaned up, reset to idle")
-        else:
-            # Resume from valid persistent state
-            logger.info(f"Resuming from valid state: {state.stage.value}")
+        elif state.stage == StageEnum.FAILED:
+            # Previous operation failed, keep state for investigation but allow retry
+            logger.warning(f"Previous operation failed: {state.version}")
             state_manager.update_status(
-                stage=state.stage,
-                progress=int((state.bytes_downloaded / state.package_size) * 100),
-                message=f"Resumed {state.stage.value} for version {state.version}",
+                stage=StageEnum.FAILED,
+                progress=0,
+                message=f"Previous operation failed, ready for retry",
+                error="See logs for details",
             )
+        else:
+            # Validate state integrity before resuming
+            if state.bytes_downloaded > state.package_size:
+                logger.error(
+                    f"Corrupted state: bytes_downloaded ({state.bytes_downloaded}) > "
+                    f"package_size ({state.package_size}), cleaning up"
+                )
+                package_path = Path("./tmp") / state.package_name
+                package_path.unlink(missing_ok=True)
+                state_manager.delete_state()
+                state_manager.reset()
+                logger.info("Corrupted state cleaned up, reset to idle")
+            else:
+                # Resume from valid persistent state
+                logger.info(f"Resuming from valid state: {state.stage.value}")
+                state_manager.update_status(
+                    stage=state.stage,
+                    progress=int((state.bytes_downloaded / state.package_size) * 100),
+                    message=f"Resumed {state.stage.value} for version {state.version}",
+                )
     else:
         logger.info("No persistent state found, starting fresh")
 
@@ -98,7 +120,7 @@ async def root():
 def main():
     """Main entry point for running the server."""
     uvicorn.run(
-        "updater.main:app",
+        app,  # Pass app object directly for debug support
         host="0.0.0.0",
         port=12315,
         log_level="info",

@@ -57,11 +57,32 @@ class DownloadService:
             f"size={package_size} bytes"
         )
 
-        # Check for existing partial download
+        # Check for existing partial download and validate it's the same package
         bytes_downloaded = 0
         if target_path.exists():
-            bytes_downloaded = target_path.stat().st_size
-            self.logger.info(f"Resuming download from byte {bytes_downloaded}")
+            # Check if this is a resume of the same download
+            persistent_state = self.state_manager.get_persistent_state()
+            if persistent_state:
+                # Validate URL, version, and MD5 match
+                if (persistent_state.package_url != package_url or
+                    persistent_state.version != version or
+                    persistent_state.package_md5 != package_md5):
+                    self.logger.warning(
+                        f"Existing file is from different package "
+                        f"(URL/version/MD5 mismatch), deleting and starting fresh"
+                    )
+                    target_path.unlink()
+                    self.state_manager.delete_state()
+                else:
+                    # Same package, safe to resume
+                    bytes_downloaded = target_path.stat().st_size
+                    self.logger.info(f"Resuming download from byte {bytes_downloaded}")
+            else:
+                # No state file but file exists - orphaned file, delete it
+                self.logger.warning(
+                    f"Found orphaned file without state.json, deleting and starting fresh"
+                )
+                target_path.unlink()
 
         # Update state to downloading
         self.state_manager.update_status(
@@ -80,7 +101,21 @@ class DownloadService:
                 version=version,
                 package_md5=package_md5,
             )
+        except ValueError as e:
+            # ValueError indicates validation errors (PACKAGE_SIZE_MISMATCH, etc.)
+            # These are not resumable, delete state and file
+            self.logger.error(f"Validation failed: {e}", exc_info=True)
+            target_path.unlink(missing_ok=True)
+            self.state_manager.delete_state()
+            self.state_manager.update_status(
+                stage=StageEnum.FAILED,
+                progress=0,
+                message="Download validation failed",
+                error=str(e),
+            )
+            raise
         except Exception as e:
+            # Network errors, etc. - keep state.json for resumable download
             self.logger.error(f"Download failed: {e}", exc_info=True)
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
@@ -103,6 +138,21 @@ class DownloadService:
         except ValueError as e:
             self.logger.error(f"MD5 verification failed: {e}")
             target_path.unlink(missing_ok=True)  # Delete corrupted file
+
+            # Update state to FAILED and save to state.json
+            from datetime import datetime
+            failed_state = StateFile(
+                version=version,
+                package_url=package_url,
+                package_name=package_name,
+                package_size=package_size,
+                package_md5=package_md5,
+                bytes_downloaded=0,  # Reset for potential retry
+                last_update=datetime.now(),
+                stage=StageEnum.FAILED,
+                verified_at=None,
+            )
+            self.state_manager.save_state(failed_state)
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
                 progress=0,
@@ -135,10 +185,14 @@ class DownloadService:
         Args:
             url: Download URL
             target_path: Target file path
-            package_size: Total expected bytes
+            package_size: Total expected bytes (from cloud API)
             bytes_downloaded: Already downloaded bytes
             version: Version being downloaded
             package_md5: Expected MD5 hash
+
+        Raises:
+            ValueError: If download incomplete or size mismatch
+            httpx.HTTPError: If HTTP request fails
         """
         headers = {}
         if bytes_downloaded > 0:
@@ -147,6 +201,15 @@ class DownloadService:
         async with httpx.AsyncClient(timeout=30.0) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
+
+                # Get Content-Length from server (if available)
+                content_length_header = response.headers.get("Content-Length")
+                expected_from_server = None
+                if content_length_header:
+                    expected_from_server = int(content_length_header)
+                    # For Range requests, Content-Length is the remaining bytes
+                    if bytes_downloaded > 0:
+                        expected_from_server += bytes_downloaded
 
                 # Open file in append mode if resuming, write mode if starting fresh
                 mode = "ab" if bytes_downloaded > 0 else "wb"
@@ -182,4 +245,32 @@ class DownloadService:
                             )
                             self.state_manager.save_state(state)
 
-        self.logger.info(f"Downloaded {bytes_downloaded} bytes")
+        # HTTP transfer completed, now validate
+        self.logger.info(
+            f"HTTP transfer completed: {bytes_downloaded} bytes downloaded"
+        )
+
+        # Validation 1: Check against HTTP Content-Length (if server provided it)
+        if expected_from_server is not None:
+            if bytes_downloaded != expected_from_server:
+                self.logger.error(
+                    f"Incomplete download: HTTP Content-Length={expected_from_server}, "
+                    f"but only received {bytes_downloaded} bytes"
+                )
+                raise ValueError(
+                    f"INCOMPLETE_DOWNLOAD: expected {expected_from_server} bytes "
+                    f"from server, but only received {bytes_downloaded} bytes"
+                )
+
+        # Validation 2: Check against business-declared package_size
+        if bytes_downloaded != package_size:
+            self.logger.error(
+                f"Package size mismatch: declared {package_size} bytes, "
+                f"but downloaded {bytes_downloaded} bytes"
+            )
+            raise ValueError(
+                f"PACKAGE_SIZE_MISMATCH: expected {package_size} bytes, "
+                f"but downloaded {bytes_downloaded} bytes"
+            )
+
+        self.logger.info(f"Download size validation passed: {bytes_downloaded} bytes")
