@@ -68,8 +68,32 @@ async def lifespan(app: FastAPI):
                 message=f"Previous operation failed, ready for retry",
                 error="See logs for details",
             )
+        elif state.stage == StageEnum.DOWNLOADING:
+            # Service restarted during download - background task was lost
+            # Clean up partial download and reset to idle (no auto-resume for now)
+            logger.warning(
+                f"Found interrupted download: version={state.version}, "
+                f"bytes={state.bytes_downloaded}, cleaning up..."
+            )
+            package_path = Path("./tmp") / state.package_name
+            package_path.unlink(missing_ok=True)
+            state_manager.delete_state()
+            state_manager.reset()
+            logger.info("Interrupted download cleaned up, reset to idle")
+        elif state.stage == StageEnum.VERIFYING:
+            # Service restarted during verification - verification task was lost
+            # Clean up and reset to idle, client can retry download
+            logger.warning(
+                f"Found interrupted verification: version={state.version}, "
+                f"cleaning up..."
+            )
+            package_path = Path("./tmp") / state.package_name
+            package_path.unlink(missing_ok=True)
+            state_manager.delete_state()
+            state_manager.reset()
+            logger.info("Interrupted verification cleaned up, reset to idle")
         else:
-            # Validate state integrity before resuming
+            # Validate state integrity for other stages (TO_INSTALL, etc.)
             if state.bytes_downloaded > state.package_size:
                 logger.error(
                     f"Corrupted state: bytes_downloaded ({state.bytes_downloaded}) > "
@@ -81,7 +105,7 @@ async def lifespan(app: FastAPI):
                 state_manager.reset()
                 logger.info("Corrupted state cleaned up, reset to idle")
             else:
-                # Resume from valid persistent state
+                # Resume from valid persistent state (TO_INSTALL, SUCCESS, etc.)
                 logger.info(f"Resuming from valid state: {state.stage.value}")
                 state_manager.update_status(
                     stage=state.stage,
