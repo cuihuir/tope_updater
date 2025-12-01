@@ -59,6 +59,10 @@ Rationale for MINOR version (1.2.0):
 
 # TOP.E OTA Updater Device Program Constitution
 
+> **"完美不是无可增加，而是无可删减"**
+> _"Perfection is achieved, not when there is nothing more to add, but when there is nothing left to take away."_
+> — Antoine de Saint-Exupéry
+
 ## Core Principles
 
 ### I. Core Mission (Prime Directive)
