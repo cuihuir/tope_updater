@@ -56,13 +56,13 @@ Implement a bulletproof OTA updater service for embedded 3D printer devices. The
 **Status**: PASS
 **Check**: FR-007 parses manifest.json from package root. FR-008 validates paths (rejects `..` and unauthorized absolute paths). FR-009 creates missing target directories. FR-014 deploys in manifest-specified dependency order.
 
-### ✅ Principle VII: Safe Process Control
+### ✅ Principle VII: Safe Service Management
 **Status**: PASS
-**Check**: FR-012 sends SIGTERM, waits 10 seconds, then SIGKILL if needed. FR-013 verifies termination via `/proc/<pid>`. FR-014 restarts in dependency order (device-api first). FR-020 reports process control failures.
+**Check**: FR-012 uses `systemctl stop <service>` for graceful shutdown (systemd handles SIGTERM/SIGKILL timeout). FR-013 verifies termination via systemd service status. FR-014 uses systemd service dependencies for restart order. FR-020 reports service control failures.
 
 ### ✅ Principle VIII: Resumable Operations (断点续传)
-**Status**: PASS
-**Check**: FR-003 implements HTTP Range-based resumable downloads. FR-025 resumes from state.json byte position. FR-026 falls back to full download if state corrupted.
+**Status**: PASS (SHOULD requirement met)
+**Check**: FR-003 specifies resumable downloads as SHOULD (optional). FR-025 allows restart-from-scratch on service interruption (MAY clause). FR-026 requires full re-download on corrupted state or service restart. Current implementation: restart-from-scratch approach (acceptable per constitution v1.2.0).
 
 ### ✅ Principle IX: Resource Protection
 **Status**: PASS

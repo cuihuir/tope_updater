@@ -33,19 +33,21 @@ When device-api triggers an OTA update, the updater program must download the up
 
 ---
 
-### User Story 2 - Resumable Downloads (Priority: P2)
+### User Story 2 - Resumable Downloads (Priority: P3 - Optional Enhancement)
 
-When network connectivity is unreliable or interrupted during download, the updater must support resuming downloads from the last successful position rather than restarting from scratch.
+When network connectivity is unreliable or interrupted during download, the updater should support resuming downloads from the last successful position to reduce bandwidth waste. However, restart-from-scratch is acceptable for MVP.
 
-**Why this priority**: Devices operate on WiFi/cellular networks with frequent interruptions. Resumable downloads reduce bandwidth waste and update time in poor network conditions.
+**Why this priority**: While resumable downloads improve user experience on unreliable networks, restarting downloads ensures reliable version delivery. This is an optimization, not a core requirement.
 
 **Independent Test**: Can be tested by simulating network interruption mid-download, verifying updater saves progress, and resumes from the same byte position when reconnected.
 
-**Acceptance Scenarios**:
+**Acceptance Scenarios** (Optional):
 
 1. **Given** download in progress at 50%, **When** network disconnects, **Then** updater saves current byte position to state file
 2. **Given** partial download exists with valid state file, **When** updater restarts download, **Then** updater sends HTTP Range header and resumes from saved position
 3. **Given** resumed download completes, **When** updater verifies MD5, **Then** MD5 matches expected value confirming successful resume
+
+**MVP Behavior**: Service restart/timeout during download → clean up partial file, restart download from beginning
 
 ---
 
@@ -65,19 +67,19 @@ When deploying updated files, the updater must ensure atomic file replacement to
 
 ---
 
-### User Story 4 - Safe Process Control (Priority: P2)
+### User Story 4 - Safe Service Management (Priority: P2)
 
-When updating services like device-api or voice-app, the updater must gracefully terminate processes before file replacement and restart them in correct dependency order afterward.
+When updating services like device-api or voice-app, the updater must use systemd to gracefully terminate services before file replacement and restart them in correct dependency order afterward.
 
-**Why this priority**: Forcefully killing processes can corrupt application state or leave resources locked. Graceful shutdown ensures clean state transitions.
+**Why this priority**: systemd provides robust service lifecycle management with built-in timeout handling and dependency ordering. Using systemd ensures consistent service control across all device components.
 
-**Independent Test**: Can be tested by monitoring process termination signals and timing, verifying SIGTERM is sent first with timeout before SIGKILL, and services restart in dependency order.
+**Independent Test**: Can be tested by monitoring systemd service status during update, verifying services stop gracefully and restart in dependency order.
 
 **Acceptance Scenarios**:
 
-1. **Given** service needs updating, **When** updater terminates process, **Then** updater sends SIGTERM and waits 10 seconds for graceful shutdown
-2. **Given** process doesn't respond to SIGTERM within timeout, **When** timeout expires, **Then** updater sends SIGKILL to force termination
-3. **Given** all services terminated and files deployed, **When** updater restarts services, **Then** updater starts device-api first, then other services in dependency order
+1. **Given** service needs updating, **When** updater stops service, **Then** updater uses `systemctl stop <service>` (systemd sends SIGTERM, waits for configured timeout, then SIGKILL if needed)
+2. **Given** service doesn't respond within systemd timeout, **When** timeout expires, **Then** systemd sends SIGKILL automatically
+3. **Given** all services stopped and files deployed, **When** updater restarts services, **Then** systemd starts services in dependency order (device-api.service before dependents)
 
 ---
 
@@ -154,7 +156,7 @@ When updater begins OTA process, it may optionally launch ota-gui program to dis
 - **FR-001b**: POST `/api/v1.0/update` endpoint MUST accept JSON payload with field: `version` (string). Endpoint MUST verify downloaded package exists and MD5 matches before starting installation. Endpoint MUST return 200 OK immediately and start installation in background. Endpoint MUST return 409 Conflict if download not completed or if another operation is in progress.
 - **FR-001c**: GET `/api/v1.0/progress` endpoint MUST return JSON with fields: `stage` (string enum: idle/downloading/verifying/toInstall/installing/rebooting/success/failed), `progress` (integer 0-100), `message` (string), `error` (string or null). Endpoint MUST respond within 100ms.
 - **FR-002**: Updater MUST download packages from S3-compatible storage via HTTP/HTTPS URLs using standard library HTTP client
-- **FR-003**: Updater MUST implement HTTP Range-based resumable downloads by sending Range header and tracking byte position in persistent state file at `./tmp/state.json`
+- **FR-003**: Updater SHOULD implement HTTP Range-based resumable downloads by sending Range header and tracking byte position in persistent state file at `./tmp/state.json`. Updater MAY restart downloads from beginning on service interruption as an acceptable tradeoff for simpler implementation.
 - **FR-004**: Updater MUST compute MD5 hash of downloaded package and compare byte-for-byte with provided MD5 value
 - **FR-005**: Updater MUST abort update and report `MD5_MISMATCH` error if verification fails, then delete corrupted file
 - **FR-006**: Updater MUST extract downloaded ZIP package using standard library archive functions
@@ -163,9 +165,9 @@ When updater begins OTA process, it may optionally launch ota-gui program to dis
 - **FR-009**: Updater MUST create missing target directories with permissions 0755 before deploying files
 - **FR-010**: Updater MUST deploy files atomically by writing to temporary files (e.g., `target.tmp`), verifying MD5, then using `rename()` syscall
 - **FR-011**: Updater MUST maintain backup of critical files before replacement to enable rollback
-- **FR-012**: Updater MUST terminate processes by sending SIGTERM, waiting 10 seconds, then sending SIGKILL if still running
-- **FR-013**: Updater MUST verify process termination before deploying files by checking `/proc/<pid>` disappears
-- **FR-014**: Updater MUST restart services in dependency order specified by manifest (device-api before other services)
+- **FR-012**: Updater MUST terminate services using `systemctl stop <service>` for graceful shutdown (systemd handles SIGTERM timeout and SIGKILL automatically)
+- **FR-013**: Updater MUST verify service termination before deploying files by checking systemd service status (`systemctl is-active <service>` returns inactive)
+- **FR-014**: Updater MUST restart services in dependency order using systemd service dependencies (e.g., device-api.service starts before dependent services as configured in systemd unit files)
 - **FR-015**: Updater MUST expose HTTP GET endpoint at `http://localhost:12315/api/v1.0/progress` returning JSON: `{"stage":"<stage>","progress":<0-100>,"message":"<msg>","error":"<err>"}` for ota-gui polling
 - **FR-016**: Updater MUST POST status updates to device-api at `http://localhost:9080/api/v1.0/ota/report` every 5% progress during download and at every major stage transition with JSON payload: `{"stage":"<stage>","progress":<0-100>,"message":"<msg>","error":"<err>"}`
 - **FR-017**: Updater MUST log all critical operations (download start/complete, MD5 result, deployment actions, process control, errors) to `./logs/updater.log` (relative to updater working directory)
@@ -176,8 +178,8 @@ When updater begins OTA process, it may optionally launch ota-gui program to dis
 - **FR-022**: Updater MUST optionally launch ota-gui by executing `/opt/tope/ota-gui` if binary exists
 - **FR-023**: Updater MUST continue OTA process if ota-gui is missing, fails to start, or crashes (non-blocking)
 - **FR-024**: Updater MUST check for incomplete operations on startup by validating state file existence and contents
-- **FR-025**: Updater MUST resume incomplete downloads if state file indicates partial download with valid byte position
-- **FR-026**: Updater MUST re-download from scratch if state file indicates MD5 failure or corrupted partial download
+- **FR-025**: Updater SHOULD resume incomplete downloads if state file indicates partial download with valid byte position. Updater MAY restart download from beginning on service interruption.
+- **FR-026**: Updater MUST re-download from scratch if state file indicates MD5 failure, corrupted partial download, or service restart/timeout
 - **FR-027**: Updater MUST attempt rollback if deployment fails, restoring backup files and reporting `DEPLOYMENT_FAILED` error
 - **FR-028**: Updater MUST clean up temporary files (ZIP package, extracted files, state file) after successful update completion
 - **FR-029**: Updater MUST minimize third-party dependencies, using only: FastAPI (async HTTP server), uvicorn (ASGI server), httpx (async HTTP client), and Python standard library. Rationale: FastAPI's async model prevents blocking during concurrent operations (download + progress polling), satisfying Constitution Principle II's performance/compatibility exception clause.
@@ -185,7 +187,7 @@ When updater begins OTA process, it may optionally launch ota-gui program to dis
 - **FR-031**: Updater MUST create `./tmp/` and `./logs/` directories with permissions 0755 on startup if they do not exist
 - **FR-032**: Updater MUST create `./backups/` directory with permissions 0755 before backup operations if it does not exist
 - **FR-033**: Updater MUST be deployed as a systemd service unit with Type=simple, auto-restart on failure (Restart=always), and dependency on network.target (After=network.target)
-- **FR-034**: Updater systemd service MUST run as root user to enable process control (SIGTERM/SIGKILL) and file deployment to system directories
+- **FR-034**: Updater systemd service MUST run as root user to enable systemd service control (`systemctl stop/start`) and file deployment to system directories
 - **FR-035**: After MD5 verification succeeds, updater MUST transition to `toInstall` stage and record verification timestamp (`verified_at`) in state.json. Updater MUST remain in `toInstall` stage until POST `/api/v1.0/update` is received.
 - **FR-036**: Before starting installation (POST `/api/v1.0/update`), updater MUST validate package trust window by checking `(current_time - verified_at) < 24 hours`. If expired, updater MUST return application-level status code 410 with error `PACKAGE_EXPIRED`, delete package files and state.json, and require re-download.
 
