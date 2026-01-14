@@ -7,11 +7,11 @@
 
 ## Task Summary
 
-- **Total Tasks**: 74
-- **Completed**: 29 (39%)
+- **Total Tasks**: 80
+- **Completed**: 29 (36%)
 - **User Stories**: 7 (P1: 1, P2: 3, P3: 2, P4: 1)
 - **MVP Status**: ✅ Phase 1-3 Complete (Basic OTA flow functional)
-- **Current Phase**: Testing & Enhancement
+- **Current Phase**: Testing & Enhancement (E2E Tests Planned)
 
 ## Implementation Strategy
 
@@ -299,11 +299,17 @@ Each user story is independently testable and delivers incremental value.
 - [ ] T067 [P] Create integration test in tests/integration/test_full_ota_flow.py simulating complete update with real files
 - [ ] T068 [P] Create contract test in tests/contract/test_api_endpoints.py validating against contracts/updater-api.yaml
 - [ ] T069 [P] Create contract test in tests/contract/test_device_api_callbacks.py validating callback payload format
-- [ ] T070 Validate deploy/install.sh script creates directories and installs service correctly
-- [ ] T071 Test systemd service deployment: install service, verify auto-start on boot, test restart on failure
-- [ ] T072 Run full end-to-end test on target embedded device (ARM/x86) with real network conditions
-- [ ] T073 Performance validation: verify <100ms /progress response, <500ms callback latency, <50MB RAM usage
-- [ ] T074 Create CHANGELOG.md documenting feature completion and version 1.0.0 release
+- [ ] T070 [E2E] Create E2E test infrastructure in tests/e2e/conftest.py with fixtures for updater service, mock servers, test data
+- [ ] T071 [E2E] Create E2E test for happy path: complete OTA flow (download → verify → deploy) in tests/e2e/test_happy_path.py
+- [ ] T072 [E2E] Create E2E test for error scenarios: MD5 mismatch, package size mismatch, network errors in tests/e2e/test_error_scenarios.py
+- [ ] T073 [E2E] Create E2E test for deployment rollback in tests/e2e/test_rollback.py
+- [ ] T074 [E2E] Create E2E test for state recovery after restart in tests/e2e/test_recovery.py
+- [ ] T075 [E2E] Create E2E test documentation and README in tests/e2e/README.md
+- [ ] T076 Validate deploy/install.sh script creates directories and installs service correctly
+- [ ] T077 Test systemd service deployment: install service, verify auto-start on boot, test restart on failure
+- [ ] T078 Run full end-to-end test on target embedded device (ARM/x86) with real network conditions
+- [ ] T079 Performance validation: verify <100ms /progress response, <500ms callback latency, <50MB RAM usage
+- [ ] T080 Create CHANGELOG.md documenting feature completion and version 1.0.0 release
 
 **Verification**: All tests pass (`pytest`), service deploys successfully, performance benchmarks met
 
