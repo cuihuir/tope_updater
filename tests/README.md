@@ -126,15 +126,15 @@ uv run python tests/fixtures/generate_test_packages.py
 ## 📊 当前测试状态
 
 ### 自动化测试
-| 模块 | 测试数 | 覆盖率 | 状态 |
-|------|--------|--------|------|
-| StateManager | 9 | 96% | ✅ |
-| DownloadService | 7 | 94% | ✅ |
-| VerificationService | 0 | 0% | ❌ |
-| DeployService | 0 | 0% | ❌ |
-| ProcessControl | 0 | 0% | ❌ |
-| Reporter | 0 | 0% | ❌ |
-| **总计** | **16** | **~25%** | 🟡 |
+| 模块 | 测试数 | 覆盖率 | 分支覆盖 | 状态 |
+|------|--------|--------|----------|------|
+| StateManager | 9 | 96% | N/A | ✅ |
+| DownloadService | 10 | 97% | 100% | ✅ |
+| VerificationService | 0 | 0% | 0% | ❌ |
+| DeployService | 0 | 0% | 0% | ❌ |
+| ProcessControl | 0 | 0% | 0% | ❌ |
+| Reporter | 0 | 0% | 0% | ❌ |
+| **总计** | **19** | **~26%** | **N/A** | 🟡 |
 
 ### 手动测试脚本
 - ✅ `test_deploy_flow.py` - 部署流程验证
