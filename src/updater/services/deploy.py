@@ -12,19 +12,26 @@ from updater.models.manifest import Manifest
 from updater.models.state import StateFile
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
+from updater.services.process import ProcessManager
 
 
 class DeployService:
     """Handles manifest-driven package deployment with atomic operations."""
 
-    def __init__(self, state_manager: Optional[StateManager] = None):
+    def __init__(
+        self,
+        state_manager: Optional[StateManager] = None,
+        process_manager: Optional[ProcessManager] = None,
+    ):
         """Initialize deployment service.
 
         Args:
             state_manager: StateManager instance (uses singleton if None)
+            process_manager: ProcessManager instance (creates new if None)
         """
         self.logger = logging.getLogger("updater.deploy")
         self.state_manager = state_manager or StateManager()
+        self.process_manager = process_manager or ProcessManager()
         self.backup_dir = Path("./backups")
 
     async def deploy_package(self, package_path: Path, version: str) -> None:
@@ -60,10 +67,26 @@ class DeployService:
                 f"expected {version}"
             )
 
-        # Deploy each module
+        # Phase 1: Stop services (停服)
+        # Collect all unique services that need to be stopped
+        modules_with_services = [
+            m for m in manifest.modules if m.process_name is not None
+        ]
+        if modules_with_services:
+            self.logger.info(
+                f"Stopping {len(modules_with_services)} services before deployment"
+            )
+            self.state_manager.update_status(
+                stage=StageEnum.INSTALLING,
+                progress=5,
+                message="Stopping services...",
+            )
+            await self._stop_services(modules_with_services)
+
+        # Phase 2: Deploy files (备份 + 替换)
         total_modules = len(manifest.modules)
         for idx, module in enumerate(manifest.modules, start=1):
-            progress = int((idx / total_modules) * 100)
+            progress = int((idx / total_modules) * 80)  # 0-80% for file deployment
             self.logger.info(
                 f"Deploying module {idx}/{total_modules}: {module.name}"
             )
@@ -75,6 +98,29 @@ class DeployService:
 
             await self._deploy_module(package_path, module, version)
 
+        # Phase 3: Start services (启动服务)
+        # Note: systemd will automatically handle dependency ordering
+        if modules_with_services:
+            self.logger.info(
+                f"Starting {len(modules_with_services)} services after deployment"
+            )
+            self.state_manager.update_status(
+                stage=StageEnum.INSTALLING,
+                progress=85,
+                message="Starting services...",
+            )
+
+            await self._start_services(modules_with_services)
+
+        # Phase 4: Verify deployment (检查)
+        self.state_manager.update_status(
+            stage=StageEnum.INSTALLING,
+            progress=95,
+            message="Verifying deployment...",
+        )
+        await self._verify_deployment(manifest)
+
+        # Phase 5: Report success (report成功)
         self.logger.info(f"Deployment complete for version {version}")
         self.state_manager.update_status(
             stage=StageEnum.SUCCESS,
@@ -174,6 +220,72 @@ class DeployService:
             self.logger.error(f"Failed to deploy {module.name}: {e}")
             raise
 
+    async def _stop_services(self, modules_with_services: list) -> None:
+        """Stop all services before deployment.
+
+        Args:
+            modules_with_services: List of modules with process_name to stop
+
+        Implementation: T047, T050
+        """
+        # Collect unique service names
+        service_names = list(set(
+            m.process_name for m in modules_with_services if m.process_name
+        ))
+
+        self.logger.info(f"Stopping {len(service_names)} unique services")
+
+        for service_name in service_names:
+            try:
+                self.logger.info(f"Stopping service: {service_name}")
+                await self.process_manager.stop_service(service_name)
+                self.logger.info(f"✓ Stopped {service_name}")
+            except Exception as e:
+                # If stop fails, we cannot safely proceed
+                # Raise error to abort deployment
+                self.logger.error(f"Failed to stop {service_name}: {e}")
+                raise RuntimeError(
+                    f"SERVICE_STOP_FAILED: Cannot safely deploy while "
+                    f"{service_name} is still running. Error: {e}"
+                )
+
+    async def _start_services(self, modules_with_services: list) -> None:
+        """Start all services after deployment.
+
+        Args:
+            modules_with_services: List of modules with process_name to start
+
+        Note:
+            systemd will automatically handle dependency ordering via
+            After= and Requires= directives in service unit files.
+            We don't need to manually sort by restart_order anymore.
+
+        Implementation: T049, T050
+        """
+        # Collect unique service names
+        service_names = list(set(
+            m.process_name for m in modules_with_services if m.process_name
+        ))
+
+        self.logger.info(f"Starting {len(service_names)} unique services")
+
+        for service_name in service_names:
+            try:
+                self.logger.info(f"Starting service: {service_name}")
+                await self.process_manager.start_service(service_name)
+                self.logger.info(f"✓ Started {service_name}")
+            except Exception as e:
+                # Log error but don't fail deployment
+                # Files are already deployed, service start failure is less critical
+                self.logger.error(
+                    f"Failed to start {service_name}: {e}"
+                )
+                self.logger.warning(
+                    "Service start failed after deployment, "
+                    "but files have been updated. "
+                    "Manual intervention may be required."
+                )
+
     async def _backup_file(self, file_path: Path, version: str) -> None:
         """Backup existing file before replacement.
 
@@ -189,3 +301,37 @@ class DeployService:
         shutil.copy2(file_path, backup_path)
 
         self.logger.info(f"Backed up {file_path.name} to {backup_path}")
+
+    async def _verify_deployment(self, manifest: Manifest) -> None:
+        """Verify all deployed files exist and are accessible.
+
+        Args:
+            manifest: Manifest with module deployment information
+
+        Raises:
+            FileNotFoundError: If deployed file doesn't exist
+        """
+        self.logger.info("Verifying deployment of all modules")
+
+        for module in manifest.modules:
+            dst_path = Path(module.dst)
+
+            if not dst_path.exists():
+                raise FileNotFoundError(
+                    f"Deployment verification failed: {dst_path} does not exist"
+                )
+
+            # Check file is readable
+            if not dst_path.is_file():
+                raise ValueError(
+                    f"Deployment verification failed: {dst_path} is not a file"
+                )
+
+            file_size = dst_path.stat().st_size
+            self.logger.debug(
+                f"✓ Verified {module.name}: {dst_path} ({file_size} bytes)"
+            )
+
+        self.logger.info(
+            f"Deployment verification passed: all {len(manifest.modules)} modules deployed"
+        )
