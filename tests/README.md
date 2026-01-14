@@ -133,8 +133,8 @@ uv run python tests/fixtures/generate_test_packages.py
 | VerificationUtils | 19 | 100% | 100% | ✅ |
 | ReportService | 11 | 82% | N/A | ✅ |
 | ProcessManager | 21 | 100% | 100% | ✅ |
-| DeployService | 0 | 0% | 0% | ❌ |
-| **总计** | **70** | **~40%** | **N/A** | 🟡 |
+| DeployService | 28 | 100% | 100% | ✅ |
+| **总计** | **98** | **~50%** | **N/A** | 🟢 |
 
 ### 手动测试脚本
 - ✅ `test_deploy_flow.py` - 部署流程验证
