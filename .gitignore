@@ -42,7 +42,7 @@ assets/
 
 # Documentation
 *.pdf  # Ignore PDF files in doc/ folder
-
+doc/*.pdf
 # IDEs
 .vscode/
 .idea/
@@ -59,3 +59,4 @@ backups/
 # OS
 .DS_Store
 Thumbs.db
+.specify

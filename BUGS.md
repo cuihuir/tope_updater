@@ -13,8 +13,8 @@
 |------|------|
 | 🔴 待修复 (Open) | 0 |
 | 🟡 进行中 (In Progress) | 0 |
-| 🟢 已修复 (Fixed) | 1 |
-| ⚫ 已关闭 (Closed) | 0 |
+| 🟢 已修复 (Fixed) | 0 |
+| ⚫ 已关闭 (Closed) | 1 |
 | **总计** | **1** |
 
 ---
@@ -33,15 +33,22 @@ _暂无_
 
 ## 🟢 已修复 Bug (Fixed)
 
+_暂无_
+
+---
+
+## ⚫ 已关闭 Bug (Closed)
+
 ### BUG-001: download.py 中 expected_from_server 变量未初始化
 
-**严重程度**: 🔴 High (高) → 🟢 Fixed
+**严重程度**: 🔴 High (高) → ⚫ Closed
 **发现日期**: 2026-01-14
 **修复日期**: 2026-01-14
+**验证日期**: 2026-01-14
 **发现者**: 测试团队 (单元测试)
 **修复者**: Claude Code
 **发现位置**: `tests/unit/test_download.py::test_download_network_error`
-**状态**: 🟢 Fixed (已修复，待验证)
+**状态**: ⚫ Closed (已修复并验证)
 
 #### 问题描述
 当网络请求失败且服务器未返回 `Content-Length` 头时，`expected_from_server` 变量未被初始化，导致抛出 `UnboundLocalError` 而不是预期的异常。
@@ -91,8 +98,8 @@ async with httpx.AsyncClient(timeout=30.0) as client:
 
 #### 修复验证
 - ✅ 代码编译通过，无语法错误
-- ⏳ 单元测试 `test_download_network_error` 需要重新启用并验证
-- ⏳ 需要测试网络错误场景确认 UnboundLocalError 已修复
+- ✅ 单元测试 `test_download_network_error` 通过
+- ✅ 网络错误场景正确抛出 httpx.RequestError，UnboundLocalError 已修复
 
 #### 影响范围
 - 修复前：网络错误导致 `UnboundLocalError`，掩盖真实错误
@@ -102,21 +109,11 @@ async with httpx.AsyncClient(timeout=30.0) as client:
 #### 相关测试
 - **测试文件**: `tests/unit/test_download.py`
 - **测试用例**: `test_download_network_error`
-- **操作**: 从 skip 改为正常测试，运行 pytest 验证
+- **操作**: 测试通过，验证完成
 
 #### 提交记录
-- Commit hash: (待提交)
+- Commit hash: 1c2ecbf
 - Commit message: "fix: 修复 download.py 中 expected_from_server 未初始化的 bug (BUG-001)"
-
----
-
-_暂无_
-
----
-
-## ⚫ 已关闭 Bug (Closed)
-
-_暂无_
 
 ---
 

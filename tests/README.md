@@ -131,10 +131,10 @@ uv run python tests/fixtures/generate_test_packages.py
 | StateManager | 9 | 96% | N/A | ✅ |
 | DownloadService | 10 | 97% | 100% | ✅ |
 | VerificationUtils | 19 | 100% | 100% | ✅ |
+| ReportService | 11 | 82% | N/A | ✅ |
 | DeployService | 0 | 0% | 0% | ❌ |
 | ProcessControl | 0 | 0% | 0% | ❌ |
-| Reporter | 0 | 0% | 0% | ❌ |
-| **总计** | **38** | **~30%** | **N/A** | 🟡 |
+| **总计** | **49** | **~35%** | **N/A** | 🟡 |
 
 ### 手动测试脚本
 - ✅ `test_deploy_flow.py` - 部署流程验证
