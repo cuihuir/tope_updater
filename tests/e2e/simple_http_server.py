@@ -21,7 +21,8 @@ class SimpleHTTPServer:
         # Create handler that serves from specific directory
         handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(self.directory))
 
-        # Create server
+        # Create server with SO_REUSEADDR to avoid "Address already in use" errors
+        socketserver.TCPServer.allow_reuse_address = True
         self.httpd = socketserver.TCPServer(("", self.port), handler)
 
         # Start in background thread
