@@ -226,6 +226,146 @@ python tests/fixtures/generate_test_packages.py
 pytest tests/unit/test_download.py -v
 ```
 
+## Bug Tracking Workflow
+
+### BUGS.md 概述
+项目使用 `BUGS.md` 作为 bug 跟踪系统，位于项目根目录。这是一个集中式的 bug 报告和跟踪文档，由测试团队维护，开发团队负责修复。
+
+**文档位置**: `BUGS.md` (项目根目录)
+
+### Bug 生命周期
+```
+🔴 Open (待修复)
+    ↓ 测试团队发现并记录
+🟡 In Progress (进行中) ← 开发团队认领
+    ↓ 开发团队修复代码
+🟢 Fixed (已修复) ← 开发团队完成修复
+    ↓ 测试团队验证
+✅ Verified (已验证)
+    ↓ 确认修复成功
+⚫ Closed (已关闭)
+```
+
+### Bug 严重程度定义
+
+| 级别 | 图标 | 定义 | 示例 |
+|------|------|------|------|
+| **Critical** | 💀 | 导致系统崩溃或数据丢失 | 核心功能完全失效 |
+| **High** | 🔴 | 严重影响功能，无替代方案 | 主要功能失效 |
+| **Medium** | 🟡 | 影响功能但有变通方案 | 边界情况失效 |
+| **Low** | 🟢 | 小问题，不影响主要功能 | UI问题、日志错误 |
+
+### 团队职责
+
+#### 测试团队职责
+1. ✅ 发现并记录 bug（添加到 BUGS.md）
+2. ✅ 提供详细的重现步骤和代码位置
+3. ✅ 编写失败或跳过的测试用例
+4. ✅ 更新 bug 统计
+5. ✅ 验证修复并更新状态为 Closed
+
+#### 开发团队职责
+1. 🔧 认领 bug（状态改为 In Progress）
+2. 🔧 修复代码
+3. 🔧 更新 BUGS.md 状态为 Fixed
+4. 🔧 在代码中添加修复注释（例如：`# FIX for BUG-001`）
+5. 🔧 通知测试团队验证
+
+### Bug 报告格式
+
+每个 bug 必须按以下格式记录：
+
+```markdown
+### BUG-XXX: [简短描述]
+
+**严重程度**: 🔴 High / 🟡 Medium / 🟢 Low
+**发现日期**: YYYY-MM-DD
+**修复日期**: YYYY-MM-DD (可选)
+**发现者**: [发现者/团队]
+**修复者**: [修复者/团队] (可选)
+**发现位置**: [测试文件::测试方法]
+**状态**: 🔴 Open / 🟡 In Progress / 🟢 Fixed / ⚫ Closed
+
+#### 问题描述
+[详细描述问题]
+
+#### 代码位置
+- **文件**: path/to/file.py
+- **函数**: function_name()
+- **行号**: XX
+
+#### 重现步骤
+1. 步骤1
+2. 步骤2
+3. ...
+
+#### 当前代码
+\`\`\`python
+# 有问题的代码
+\`\`\`
+
+#### 根本原因
+[分析根本原因]
+
+#### 预期行为
+[描述期望的正确行为]
+
+#### 建议修复方案
+\`\`\`python
+# 建议的修复代码
+\`\`\`
+
+#### 修复验证
+- ✅ 代码编译通过，无语法错误
+- ⏳ 单元测试需要验证
+- ⏳ 需要测试特定场景
+
+#### 影响范围
+[描述影响范围和严重性]
+
+#### 相关测试
+- **测试文件**: path/to/test.py
+- **测试用例**: test_name
+- **当前状态**: Pass / Fail / Skip
+
+#### 提交记录
+- Commit hash: (待提交/已提交)
+- Commit message: "fix: 修复 XXX (BUG-XXX)"
+```
+
+### 协作流程
+
+```
+测试发现 → 记录BUGS.md → 开发认领 → 修复代码 → 测试验证 → 关闭Bug
+```
+
+### Bug 修复示例
+
+**示例**: BUG-001 - download.py 中 expected_from_server 变量未初始化
+
+1. **测试团队发现**: 单元测试 `test_download_network_error` 失败
+2. **记录 Bug**: 在 BUGS.md 中添加 BUG-001，标记为 🔴 Open
+3. **开发团队认领**: 状态改为 🟡 In Progress
+4. **修复代码**:
+   ```python
+   # src/updater/services/download.py:199
+   # FIX for BUG-001: Initialize before async with block
+   expected_from_server = None
+   ```
+5. **更新状态**: BUGS.md 中标记为 🟢 Fixed，添加修复详情
+6. **提交代码**:
+   ```bash
+   git add src/updater/services/download.py BUGS.md
+   git commit -m "fix: 修复 download.py 中 expected_from_server 未初始化的 bug (BUG-001)"
+   ```
+7. **测试验证**: 运行 `test_download_network_error` 确认通过
+8. **关闭 Bug**: 状态改为 ⚫ Closed
+
+### 相关文档
+- [BUGS.md](BUGS.md) - Bug 跟踪清单
+- [测试指南](specs/001-updater-core/testing-guide.md) - 测试基础设施
+- [任务清单](specs/001-updater-core/tasks.md) - 功能开发任务
+
 ## Known Limitations
 
 1. **断点续传** - 可选功能，当前重启后从头下载

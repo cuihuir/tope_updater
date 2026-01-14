@@ -194,6 +194,10 @@ class DownloadService:
             ValueError: If download incomplete or size mismatch
             httpx.HTTPError: If HTTP request fails
         """
+        # Initialize variables before try/catch to avoid UnboundLocalError
+        # FIX for BUG-001: Initialize before async with block
+        expected_from_server = None
+
         headers = {}
         if bytes_downloaded > 0:
             headers["Range"] = f"bytes={bytes_downloaded}-"
@@ -204,7 +208,6 @@ class DownloadService:
 
                 # Get Content-Length from server (if available)
                 content_length_header = response.headers.get("Content-Length")
-                expected_from_server = None
                 if content_length_header:
                     expected_from_server = int(content_length_header)
                     # For Range requests, Content-Length is the remaining bytes
