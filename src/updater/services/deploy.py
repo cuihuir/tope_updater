@@ -9,7 +9,6 @@ from typing import Optional
 import logging
 
 from updater.models.manifest import Manifest
-from updater.models.state import StateFile
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
 from updater.services.process import ProcessManager

@@ -1,7 +1,7 @@
 """Process management for systemd service control."""
 
 import asyncio
-from typing import Optional, Literal
+from typing import Optional
 from enum import Enum
 import logging
 

@@ -40,6 +40,9 @@ tests/reports/test-report.html
 tests/reports/*.html
 assets/
 
+# Documentation
+*.pdf  # Ignore PDF files in doc/ folder
+
 # IDEs
 .vscode/
 .idea/
