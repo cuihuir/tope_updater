@@ -34,6 +34,10 @@ class DeployService:
         self.process_manager = process_manager or ProcessManager()
         self.backup_dir = Path("./backups")
 
+        # Track backup paths for rollback (T040)
+        # Key: destination file path (str), Value: backup path (Path)
+        self.backup_paths: dict[str, Path] = {}
+
     async def deploy_package(self, package_path: Path, version: str) -> None:
         """Deploy OTA package following embedded manifest.
 
@@ -45,7 +49,13 @@ class DeployService:
             FileNotFoundError: If package or manifest not found
             ValueError: If manifest parsing fails
             IOError: If file operations fail
+            RuntimeError: If deployment fails and rollback is attempted
+
+        Implementation: T040, T041
         """
+        # Clear previous backup tracking
+        self.backup_paths.clear()
+
         self.logger.info(f"Starting deployment for version {version}")
         self.state_manager.update_status(
             stage=StageEnum.INSTALLING,
@@ -53,80 +63,104 @@ class DeployService:
             message=f"Installing version {version}...",
         )
 
-        # Extract and parse manifest
-        manifest = await self._extract_and_parse_manifest(package_path)
-        self.logger.info(
-            f"Manifest loaded: version={manifest.version}, "
-            f"modules={len(manifest.modules)}"
-        )
-
-        # Validate version match
-        if manifest.version != version:
-            raise ValueError(
-                f"Version mismatch: package claims {manifest.version}, "
-                f"expected {version}"
-            )
-
-        # Phase 1: Stop services (停服)
-        # Collect all unique services that need to be stopped
-        modules_with_services = [
-            m for m in manifest.modules if m.process_name is not None
-        ]
-        if modules_with_services:
+        try:
+            # Extract and parse manifest
+            manifest = await self._extract_and_parse_manifest(package_path)
             self.logger.info(
-                f"Stopping {len(modules_with_services)} services before deployment"
+                f"Manifest loaded: version={manifest.version}, "
+                f"modules={len(manifest.modules)}"
             )
+
+            # Validate version match
+            if manifest.version != version:
+                raise ValueError(
+                    f"Version mismatch: package claims {manifest.version}, "
+                    f"expected {version}"
+                )
+
+            # Phase 1: Stop services (停服)
+            # Collect all unique services that need to be stopped
+            modules_with_services = [
+                m for m in manifest.modules if m.process_name is not None
+            ]
+            if modules_with_services:
+                self.logger.info(
+                    f"Stopping {len(modules_with_services)} services before deployment"
+                )
+                self.state_manager.update_status(
+                    stage=StageEnum.INSTALLING,
+                    progress=5,
+                    message="Stopping services...",
+                )
+                await self._stop_services(modules_with_services)
+
+            # Phase 2: Deploy files (备份 + 替换)
+            total_modules = len(manifest.modules)
+            for idx, module in enumerate(manifest.modules, start=1):
+                progress = int((idx / total_modules) * 80)  # 0-80% for file deployment
+                self.logger.info(
+                    f"Deploying module {idx}/{total_modules}: {module.name}"
+                )
+                self.state_manager.update_status(
+                    stage=StageEnum.INSTALLING,
+                    progress=progress,
+                    message=f"Installing module {module.name}...",
+                )
+
+                await self._deploy_module(package_path, module, version)
+
+            # Phase 3: Start services (启动服务)
+            # Note: systemd will automatically handle dependency ordering
+            if modules_with_services:
+                self.logger.info(
+                    f"Starting {len(modules_with_services)} services after deployment"
+                )
+                self.state_manager.update_status(
+                    stage=StageEnum.INSTALLING,
+                    progress=85,
+                    message="Starting services...",
+                )
+
+                await self._start_services(modules_with_services)
+
+            # Phase 4: Verify deployment (检查)
             self.state_manager.update_status(
                 stage=StageEnum.INSTALLING,
-                progress=5,
-                message="Stopping services...",
+                progress=95,
+                message="Verifying deployment...",
             )
-            await self._stop_services(modules_with_services)
+            await self._verify_deployment(manifest)
 
-        # Phase 2: Deploy files (备份 + 替换)
-        total_modules = len(manifest.modules)
-        for idx, module in enumerate(manifest.modules, start=1):
-            progress = int((idx / total_modules) * 80)  # 0-80% for file deployment
-            self.logger.info(
-                f"Deploying module {idx}/{total_modules}: {module.name}"
-            )
+            # Phase 5: Report success (report成功)
+            self.logger.info(f"Deployment complete for version {version}")
             self.state_manager.update_status(
-                stage=StageEnum.INSTALLING,
-                progress=progress,
-                message=f"Installing module {module.name}...",
+                stage=StageEnum.SUCCESS,
+                progress=100,
+                message=f"Successfully installed version {version}",
             )
 
-            await self._deploy_module(package_path, module, version)
+        except Exception as e:
+            # Deployment failed - attempt rollback (T040, T041)
+            self.logger.error(f"Deployment failed: {e}")
+            self.logger.warning("Attempting rollback from backups...")
 
-        # Phase 3: Start services (启动服务)
-        # Note: systemd will automatically handle dependency ordering
-        if modules_with_services:
-            self.logger.info(
-                f"Starting {len(modules_with_services)} services after deployment"
-            )
-            self.state_manager.update_status(
-                stage=StageEnum.INSTALLING,
-                progress=85,
-                message="Starting services...",
-            )
+            try:
+                await self._rollback_deployment()
+            except Exception as rollback_error:
+                self.logger.error(
+                    f"Rollback also failed: {rollback_error}"
+                )
+                raise RuntimeError(
+                    f"DEPLOYMENT_FAILED: {e}\n"
+                    f"ROLLBACK_FAILED: {rollback_error}\n"
+                    f"Manual intervention may be required!"
+                ) from rollback_error
 
-            await self._start_services(modules_with_services)
-
-        # Phase 4: Verify deployment (检查)
-        self.state_manager.update_status(
-            stage=StageEnum.INSTALLING,
-            progress=95,
-            message="Verifying deployment...",
-        )
-        await self._verify_deployment(manifest)
-
-        # Phase 5: Report success (report成功)
-        self.logger.info(f"Deployment complete for version {version}")
-        self.state_manager.update_status(
-            stage=StageEnum.SUCCESS,
-            progress=100,
-            message=f"Successfully installed version {version}",
-        )
+            # If rollback succeeded, still report original failure
+            raise RuntimeError(
+                f"DEPLOYMENT_FAILED: {e}\n"
+                f"Rollback completed successfully."
+            ) from e
 
     async def _extract_and_parse_manifest(self, package_path: Path) -> Manifest:
         """Extract manifest.json from ZIP and parse it.
@@ -194,7 +228,9 @@ class DeployService:
 
         # Backup existing file if it exists
         if dst_path.exists():
-            await self._backup_file(dst_path, version)
+            backup_path = await self._backup_file(dst_path, version)
+            # Track backup for potential rollback (T040)
+            self.backup_paths[str(dst_path)] = backup_path
 
         # Extract to temporary file first (atomic operation)
         tmp_path = dst_path.parent / f"{dst_path.name}.tmp"
@@ -286,12 +322,17 @@ class DeployService:
                     "Manual intervention may be required."
                 )
 
-    async def _backup_file(self, file_path: Path, version: str) -> None:
+    async def _backup_file(self, file_path: Path, version: str) -> Path:
         """Backup existing file before replacement.
 
         Args:
             file_path: File to backup
             version: Version being installed (for backup naming)
+
+        Returns:
+            Path to the backup file
+
+        Implementation: T038
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = f"{file_path.name}.{version}.{timestamp}.bak"
@@ -301,6 +342,7 @@ class DeployService:
         shutil.copy2(file_path, backup_path)
 
         self.logger.info(f"Backed up {file_path.name} to {backup_path}")
+        return backup_path
 
     async def _verify_deployment(self, manifest: Manifest) -> None:
         """Verify all deployed files exist and are accessible.
@@ -335,3 +377,54 @@ class DeployService:
         self.logger.info(
             f"Deployment verification passed: all {len(manifest.modules)} modules deployed"
         )
+
+    async def _rollback_deployment(self) -> None:
+        """Rollback deployment by restoring files from backups.
+
+        Iterates through all tracked backups and restores them to their
+        original locations. This is called automatically when deployment fails.
+
+        Raises:
+            FileNotFoundError: If backup file is missing
+            IOError: If restore operation fails
+
+        Implementation: T040
+        """
+        if not self.backup_paths:
+            self.logger.warning("No backups to restore")
+            return
+
+        self.logger.info(f"Rolling back {len(self.backup_paths)} files...")
+
+        restore_errors = []
+
+        for dst_path_str, backup_path in self.backup_paths.items():
+            dst_path = Path(dst_path_str)
+
+            try:
+                if not backup_path.exists():
+                    error_msg = f"Backup file not found: {backup_path}"
+                    self.logger.error(error_msg)
+                    restore_errors.append(error_msg)
+                    continue
+
+                # Restore from backup
+                self.logger.info(f"Restoring {dst_path} from {backup_path}")
+                shutil.copy2(backup_path, dst_path)
+                self.logger.info(f"✓ Restored {dst_path}")
+
+            except Exception as e:
+                error_msg = f"Failed to restore {dst_path}: {e}"
+                self.logger.error(error_msg)
+                restore_errors.append(error_msg)
+
+        # Clear backup tracking after rollback attempt
+        self.backup_paths.clear()
+
+        if restore_errors:
+            raise RuntimeError(
+                f"Rollback completed with {len(restore_errors)} errors:\n" +
+                "\n".join(restore_errors)
+            )
+
+        self.logger.info("Rollback completed successfully")
