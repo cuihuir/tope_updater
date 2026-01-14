@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock Service v2.0.0 for OTA testing
+# This is a mock service that doesn't actually run as a systemd service
+echo "Mock Service v2.0.0"
+echo "This would be a real service binary in production"
+exit 0

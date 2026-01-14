@@ -33,9 +33,12 @@ uv.lock
 # Testing
 .pytest_cache/
 .coverage
-htmlcov/
 *.cover
 .hypothesis/
+tests/reports/htmlcov/
+tests/reports/test-report.html
+tests/reports/*.html
+assets/
 
 # IDEs
 .vscode/

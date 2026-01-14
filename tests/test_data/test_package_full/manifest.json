@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "modules": [
+    {
+      "name": "mock-service",
+      "src": "modules/mock-service/mock-app",
+      "dst": "/tmp/tope-updater-test/mock-app",
+      "process_name": "mock-service",
+      "restart_order": 1
+    }
+  ]
+}

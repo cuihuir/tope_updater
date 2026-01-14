@@ -1,0 +1,5 @@
+#!/bin/bash
+# Test OTA Update Binary v1.0.0
+echo "Test application v1.0.0 - OTA Update Test"
+echo "Timestamp: $(date)"
+exit 0

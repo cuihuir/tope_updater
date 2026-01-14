@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "modules": [
+    {
+      "name": "test-app",
+      "src": "modules/test-app/test-binary",
+      "dst": "/tmp/tope-updater-test/test-binary"
+    }
+  ]
+}
