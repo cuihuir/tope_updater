@@ -177,7 +177,7 @@ def updater_service() -> Generator[subprocess.Popen, None, None]:
 
 
 @pytest.fixture(scope="function")
-def http_client() -> Generator[httpx.AsyncClient, None, None]:
+async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """Provide async HTTP client for API calls.
 
     Yields:
