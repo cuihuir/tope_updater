@@ -3,7 +3,9 @@
 import http.server
 import socketserver
 import threading
+import os
 from pathlib import Path
+from functools import partial
 
 class SimpleHTTPServer:
     """Simple HTTP server for E2E tests."""
@@ -16,21 +18,15 @@ class SimpleHTTPServer:
 
     def start(self):
         """Start the HTTP server in a background thread."""
-        # Change to the directory to serve
-        import os
-        original_dir = os.getcwd()
-        os.chdir(self.directory)
+        # Create handler that serves from specific directory
+        handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(self.directory))
 
         # Create server
-        Handler = http.server.SimpleHTTPRequestHandler
-        self.httpd = socketserver.TCPServer(("", self.port), Handler)
+        self.httpd = socketserver.TCPServer(("", self.port), handler)
 
         # Start in background thread
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
-
-        # Change back to original directory
-        os.chdir(original_dir)
 
         print(f"HTTP server started on port {self.port}, serving {self.directory}")
 
