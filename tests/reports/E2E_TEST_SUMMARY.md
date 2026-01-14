@@ -96,12 +96,7 @@
 5. 读取并验证state.json内容
 6. 验证API返回的状态已改变
 
-**状态**: ✅ 代码完成，⚠️ 测试失败（需要修复URL格式）
-
-**当前问题**:
-- 下载请求返回422错误
-- 使用`file://`协议可能不被API支持
-- 需要使用HTTP服务器提供测试包
+**状态**: ✅ 代码完成，✅ URL格式问题已修复，⏳ 需要真实环境验证
 
 ---
 
@@ -203,12 +198,15 @@ status = await wait_for_stage(
 
 ## 当前问题和限制
 
-### 1. URL格式问题
-**问题**: 测试使用`file://`协议，但API可能不支持
-**影响**: E2E-005等测试失败
-**解决方案**:
-- 使用HTTP服务器提供测试包
-- 或修改API支持file://协议（仅用于测试）
+### 1. URL格式问题 ✅ 已修复
+**问题**: 测试使用`file://`协议，但API不支持
+**影响**: E2E-005等测试失败（422错误）
+**解决方案**: ✅ 已实现
+- 新增 `simple_http_server.py` 提供简单的HTTP服务器
+- 新增 `package_http_server` fixture 自动启动HTTP服务器
+- 更新所有E2E测试用例使用HTTP URL
+- 添加 SO_REUSEADDR 避免端口占用错误
+- 新增 `test_http_server.py` 验证HTTP服务器功能
 
 ### 2. Mock服务器未集成
 **问题**: Package server和device-api mock未在测试中使用
@@ -280,10 +278,10 @@ pytest tests/e2e/ -v -s --log-cli-level=INFO
 ## 下一步计划
 
 ### 立即行动（P0）
-1. ⏳ **修复URL格式问题** - 使用HTTP服务器或支持file://
-2. ⏳ **注册pytest标记** - 在pytest.ini中添加e2e标记
-3. ⏳ **运行基础测试** - 验证test_debug_environment通过
-4. ⏳ **修复E2E-005** - 确保状态持久化测试通过
+1. ✅ **修复URL格式问题** - 已使用HTTP服务器替代file://
+2. ⏳ **注册pytest标记** - 在pytest.ini中添加e2e标记（已存在）
+3. ⏳ **运行基础测试** - 验证test_debug_environment通过（已通过）
+4. ⏳ **运行E2E测试** - 需要启动updater服务进行真实环境验证
 
 ### 短期任务（P1）
 1. ⏳ **集成mock服务器** - 在测试中使用package_server
