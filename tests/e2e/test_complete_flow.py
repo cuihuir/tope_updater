@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 @pytest.mark.asyncio
 async def test_e2e_001_complete_update_flow(
     http_client: httpx.AsyncClient,
-    sample_test_package: Path
+    sample_test_package: Path,
+    package_http_server: str
 ):
     """E2E-001: Complete OTA update flow (download + verify + deploy).
 
@@ -57,9 +58,12 @@ async def test_e2e_001_complete_update_flow(
 
     # Step 3: Trigger download
     logger.info("Step 3: Trigger download")
+    package_url = f"{package_http_server}/{sample_test_package.name}"
+    logger.info(f"Package URL: {package_url}")
+
     download_payload = {
         "version": "1.0.0",
-        "package_url": f"file://{sample_test_package}",  # Use file:// URL for local testing
+        "package_url": package_url,
         "package_name": sample_test_package.name,
         "package_size": package_size,
         "package_md5": md5_hash
@@ -132,7 +136,8 @@ async def test_e2e_001_complete_update_flow(
 @pytest.mark.asyncio
 async def test_e2e_002_md5_verification_failure(
     http_client: httpx.AsyncClient,
-    sample_test_package: Path
+    sample_test_package: Path,
+    package_http_server: str
 ):
     """E2E-002: MD5 checksum verification failure.
 
@@ -157,10 +162,11 @@ async def test_e2e_002_md5_verification_failure(
     logger.info("Step 2: Prepare download with incorrect MD5")
     package_size = sample_test_package.stat().st_size
     wrong_md5 = "0" * 32  # Intentionally wrong MD5
+    package_url = f"{package_http_server}/{sample_test_package.name}"
 
     download_payload = {
         "version": "1.0.0",
-        "package_url": f"file://{sample_test_package}",
+        "package_url": package_url,
         "package_name": sample_test_package.name,
         "package_size": package_size,
         "package_md5": wrong_md5
@@ -204,7 +210,8 @@ async def test_e2e_002_md5_verification_failure(
 @pytest.mark.asyncio
 async def test_e2e_003_package_size_mismatch(
     http_client: httpx.AsyncClient,
-    sample_test_package: Path
+    sample_test_package: Path,
+    package_http_server: str
 ):
     """E2E-003: Package size mismatch detection.
 
@@ -227,10 +234,11 @@ async def test_e2e_003_package_size_mismatch(
         md5_hash = hashlib.md5(f.read()).hexdigest()
 
     wrong_size = 999999  # Intentionally wrong size
+    package_url = f"{package_http_server}/{sample_test_package.name}"
 
     download_payload = {
         "version": "1.0.0",
-        "package_url": f"file://{sample_test_package}",
+        "package_url": package_url,
         "package_name": sample_test_package.name,
         "package_size": wrong_size,
         "package_md5": md5_hash
@@ -269,7 +277,8 @@ async def test_e2e_003_package_size_mismatch(
 @pytest.mark.asyncio
 async def test_e2e_004_deployment_rollback(
     http_client: httpx.AsyncClient,
-    tmp_path: Path
+    tmp_path: Path,
+    package_http_server: str
 ):
     """E2E-004: Deployment failure and rollback.
 
@@ -291,7 +300,7 @@ async def test_e2e_004_deployment_rollback(
     # Use a destination that requires root permissions
     invalid_package = create_test_package(
         version="2.0.0",
-        dest_dir=tmp_path,
+        dest_dir=TEST_PACKAGES_DIR,  # Save to packages dir so HTTP server can serve it
         modules=[{
             "name": "invalid-module",
             "src": "bin/test",
@@ -305,12 +314,13 @@ async def test_e2e_004_deployment_rollback(
         package_content = f.read()
         md5_hash = hashlib.md5(package_content).hexdigest()
     package_size = len(package_content)
+    package_url = f"{package_http_server}/{invalid_package.name}"
 
     # Step 2: Trigger download
     logger.info("Step 2: Trigger download")
     download_payload = {
         "version": "2.0.0",
-        "package_url": f"file://{invalid_package}",
+        "package_url": package_url,
         "package_name": invalid_package.name,
         "package_size": package_size,
         "package_md5": md5_hash
@@ -371,7 +381,8 @@ async def test_e2e_004_deployment_rollback(
 @pytest.mark.asyncio
 async def test_e2e_005_state_persistence(
     http_client: httpx.AsyncClient,
-    sample_test_package: Path
+    sample_test_package: Path,
+    package_http_server: str
 ):
     """E2E-005: State persistence and recovery.
 
@@ -395,10 +406,11 @@ async def test_e2e_005_state_persistence(
     with open(sample_test_package, "rb") as f:
         md5_hash = hashlib.md5(f.read()).hexdigest()
     package_size = sample_test_package.stat().st_size
+    package_url = f"{package_http_server}/{sample_test_package.name}"
 
     download_payload = {
         "version": "1.0.0",
-        "package_url": f"file://{sample_test_package}",
+        "package_url": package_url,
         "package_name": sample_test_package.name,
         "package_size": package_size,
         "package_md5": md5_hash
@@ -450,7 +462,8 @@ async def test_e2e_005_state_persistence(
 @pytest.mark.asyncio
 async def test_e2e_006_concurrent_requests_handling(
     http_client: httpx.AsyncClient,
-    sample_test_package: Path
+    sample_test_package: Path,
+    package_http_server: str
 ):
     """E2E-006: Concurrent request handling.
 
@@ -468,10 +481,11 @@ async def test_e2e_006_concurrent_requests_handling(
     with open(sample_test_package, "rb") as f:
         md5_hash = hashlib.md5(f.read()).hexdigest()
     package_size = sample_test_package.stat().st_size
+    package_url = f"{package_http_server}/{sample_test_package.name}"
 
     download_payload = {
         "version": "1.0.0",
-        "package_url": f"file://{sample_test_package}",
+        "package_url": package_url,
         "package_name": sample_test_package.name,
         "package_size": package_size,
         "package_md5": md5_hash

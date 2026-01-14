@@ -67,6 +67,39 @@ def setup_test_environment() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="session")
+def package_http_server() -> Generator[str, None, None]:
+    """Start simple HTTP server to serve test packages.
+
+    Yields:
+        str: Base URL of the package server
+    """
+    from tests.e2e.simple_http_server import SimpleHTTPServer
+
+    logger.info("Starting package HTTP server...")
+
+    # Start HTTP server serving test packages directory
+    server = SimpleHTTPServer(TEST_PACKAGES_DIR, PACKAGE_SERVER_PORT)
+    server.start()
+
+    # Wait for server to be ready
+    time.sleep(1)
+
+    # Verify server is running
+    try:
+        import requests
+        response = requests.get(PACKAGE_SERVER_URL, timeout=2)
+        logger.info(f"Package server ready at {PACKAGE_SERVER_URL}")
+    except Exception as e:
+        logger.warning(f"Could not verify package server: {e}")
+
+    yield PACKAGE_SERVER_URL
+
+    # Stop server
+    logger.info("Stopping package HTTP server...")
+    server.stop()
+
+
+@pytest.fixture(scope="session")
 def mock_servers() -> Generator[dict, None, None]:
     """Start mock servers for testing.
 
@@ -76,23 +109,6 @@ def mock_servers() -> Generator[dict, None, None]:
     logger.info("Starting mock servers...")
 
     servers = {}
-
-    # Start package server
-    package_server_script = PROJECT_ROOT / "tests" / "fixtures" / "tests" / "mocks" / "package_server.py"
-    if package_server_script.exists():
-        proc = subprocess.Popen(
-            ["python", str(package_server_script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        servers["package_server"] = {
-            "url": PACKAGE_SERVER_URL,
-            "port": PACKAGE_SERVER_PORT,
-            "pid": proc.pid,
-            "process": proc
-        }
-        logger.info(f"Package server started on port {PACKAGE_SERVER_PORT}")
-        time.sleep(1)  # Wait for server to start
 
     # Start device-api mock
     device_api_script = PROJECT_ROOT / "tests" / "fixtures" / "tests" / "mocks" / "device_api_server.py"
