@@ -11,20 +11,27 @@ import aiofiles
 from updater.models.state import StateFile
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
+from updater.services.reporter import ReportService
 from updater.utils.verification import verify_md5_or_raise
 
 
 class DownloadService:
     """Handles resumable package downloads with progress reporting."""
 
-    def __init__(self, state_manager: Optional[StateManager] = None):
+    def __init__(
+        self,
+        state_manager: Optional[StateManager] = None,
+        reporter: Optional[ReportService] = None,
+    ):
         """Initialize download service.
 
         Args:
             state_manager: StateManager instance (uses singleton if None)
+            reporter: ReportService instance for device-api callbacks (optional)
         """
         self.logger = logging.getLogger("updater.download")
         self.state_manager = state_manager or StateManager()
+        self.reporter = reporter
         self.chunk_size = 64 * 1024  # 64KB chunks for progress granularity
 
     async def download_package(
@@ -85,11 +92,20 @@ class DownloadService:
                 target_path.unlink()
 
         # Update state to downloading
+        initial_progress = int((bytes_downloaded / package_size) * 100)
         self.state_manager.update_status(
             stage=StageEnum.DOWNLOADING,
-            progress=int((bytes_downloaded / package_size) * 100),
+            progress=initial_progress,
             message=f"Downloading version {version}...",
         )
+
+        # Report to device-api
+        if self.reporter:
+            await self.reporter.report_progress(
+                stage=StageEnum.DOWNLOADING,
+                progress=initial_progress,
+                message=f"Downloading version {version}...",
+            )
 
         # Perform resumable download
         try:
@@ -105,24 +121,50 @@ class DownloadService:
             # ValueError indicates validation errors (PACKAGE_SIZE_MISMATCH, etc.)
             # These are not resumable, delete state and file
             self.logger.error(f"Validation failed: {e}", exc_info=True)
+
+            # Calculate current progress for error reporting
+            current_progress = int((bytes_downloaded / package_size) * 100) if package_size > 0 else 0
+
             target_path.unlink(missing_ok=True)
             self.state_manager.delete_state()
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
-                progress=0,
+                progress=current_progress,
                 message="Download validation failed",
                 error=str(e),
             )
+
+            # Report to device-api (preserve progress for analysis)
+            if self.reporter:
+                await self.reporter.report_progress(
+                    stage=StageEnum.FAILED,
+                    progress=current_progress,
+                    message="Download validation failed",
+                    error=str(e),
+                )
             raise
         except Exception as e:
             # Network errors, etc. - keep state.json for resumable download
             self.logger.error(f"Download failed: {e}", exc_info=True)
+
+            # Calculate current progress for error reporting
+            current_progress = int((bytes_downloaded / package_size) * 100) if package_size > 0 else 0
+
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
-                progress=0,
+                progress=current_progress,
                 message="Download failed",
                 error=f"DOWNLOAD_FAILED: {str(e)}",
             )
+
+            # Report to device-api (preserve progress for analysis)
+            if self.reporter:
+                await self.reporter.report_progress(
+                    stage=StageEnum.FAILED,
+                    progress=current_progress,
+                    message="Download failed",
+                    error=f"DOWNLOAD_FAILED: {str(e)}",
+                )
             raise
 
         # Verify MD5
@@ -132,6 +174,14 @@ class DownloadService:
             progress=0,
             message="Verifying package integrity...",
         )
+
+        # Report to device-api
+        if self.reporter:
+            await self.reporter.report_progress(
+                stage=StageEnum.VERIFYING,
+                progress=0,
+                message="Verifying package integrity...",
+            )
 
         try:
             verify_md5_or_raise(target_path, package_md5)
@@ -155,10 +205,19 @@ class DownloadService:
             self.state_manager.save_state(failed_state)
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
-                progress=0,
+                progress=100,  # Download completed, but verification failed
                 message="MD5 verification failed",
                 error=str(e),
             )
+
+            # Report to device-api (progress=100 since download completed)
+            if self.reporter:
+                await self.reporter.report_progress(
+                    stage=StageEnum.FAILED,
+                    progress=100,
+                    message="MD5 verification failed",
+                    error=str(e),
+                )
             raise
 
         # MD5 verified successfully
@@ -168,6 +227,14 @@ class DownloadService:
             progress=100,
             message=f"Package ready to install: {version}",
         )
+
+        # Report to device-api
+        if self.reporter:
+            await self.reporter.report_progress(
+                stage=StageEnum.TO_INSTALL,
+                progress=100,
+                message=f"Package ready to install: {version}",
+            )
 
         return target_path
 
@@ -235,6 +302,14 @@ class DownloadService:
                                 progress=current_progress,
                                 message=f"Downloading version {version}...",
                             )
+
+                            # Report to device-api
+                            if self.reporter:
+                                await self.reporter.report_progress(
+                                    stage=StageEnum.DOWNLOADING,
+                                    progress=current_progress,
+                                    message=f"Downloading version {version}...",
+                                )
 
                             # Save persistent state for resume capability
                             state = StateFile(

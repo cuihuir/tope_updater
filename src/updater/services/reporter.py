@@ -10,17 +10,31 @@ from updater.models.status import StageEnum
 
 
 class ReportService:
-    """Handles progress reporting to device-api."""
+    """Singleton service for progress reporting to device-api."""
+
+    _instance: Optional["ReportService"] = None
+
+    def __new__(cls, device_api_url: str = "http://localhost:9080"):
+        """Implement singleton pattern."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self, device_api_url: str = "http://localhost:9080"):
-        """Initialize report service.
+        """Initialize report service (only once due to singleton).
 
         Args:
             device_api_url: Base URL of device-api service (default: http://localhost:9080)
         """
+        if self._initialized:
+            return
+
         self.logger = logging.getLogger("updater.reporter")
         self.device_api_url = device_api_url
         self.report_endpoint = f"{device_api_url}/api/v1.0/ota/report"
+        self._initialized = True
+        self.logger.info("ReportService initialized")
 
     async def report_progress(
         self,

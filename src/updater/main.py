@@ -126,19 +126,70 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title="TOPE OTA Updater",
-    description="OTA Update Service for Embedded 3D Printer Devices",
-    version="1.0.0",
+    description="""
+## TOP.E OTA 更新服务
+
+用于嵌入式 3D 打印机设备的 OTA (Over-The-Air) 固件/软件更新服务。
+
+### 核心特性
+
+✅ 版本快照架构 | ✅ 两级回滚 | ✅ 三层验证 | ✅ 进度上报 | ✅ systemd 集成
+
+### 快速开始
+
+```bash
+# 1. 下载
+curl -X POST http://localhost:12315/api/v1.0/download -H "Content-Type: application/json" \\
+  -d '{"version":"1.0.0","package_url":"http://localhost:8888/test.zip","package_name":"test.zip","package_size":468,"package_md5":"abc123..."}'
+
+# 2. 查询进度
+curl http://localhost:12315/api/v1.0/progress
+
+# 3. 安装
+curl -X POST http://localhost:12315/api/v1.0/update -H "Content-Type: application/json" -d '{"version":"1.0.0"}'
+```
+
+📖 [部署指南](docs/DEPLOYMENT.md) | [回滚指南](docs/ROLLBACK.md) | [测试报告](tests/reports/version_snapshot_test_report.md)
+    """,
+    version="2.0.0",
     lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {
+            "name": "OTA Operations",
+            "description": "OTA 更新操作：下载、安装、查询进度"
+        },
+        {
+            "name": "Health",
+            "description": "健康检查和服务状态"
+        }
+    ]
 )
 
 # Register API routes
 app.include_router(router)
 
 
-@app.get("/")
+@app.get(
+    "/",
+    tags=["Health"],
+    summary="健康检查",
+    description="检查服务是否正常运行",
+)
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "service": "tope-updater", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "service": "tope-updater",
+        "version": "2.0.0",
+        "features": [
+            "Version Snapshot Architecture",
+            "Two-Level Rollback",
+            "Progress Reporting",
+            "systemd Integration"
+        ]
+    }
 
 
 def main():

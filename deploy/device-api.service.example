@@ -1,0 +1,60 @@
+# systemd service file for TOP.E services
+#
+# 此文件展示如何配置服务使用版本快照符号链接。
+#
+# 安装位置:
+#   /etc/systemd/system/device-api.service
+#   /etc/systemd/system/web-server.service
+#
+# 安装后运行:
+#   systemctl daemon-reload
+#   systemctl enable device-api
+#   systemctl start device-api
+
+[Unit]
+Description=TOP.E Device API Service
+Documentation=https://github.com/tope/device-api
+After=network.target
+Wants=network-online.target
+
+[Service]
+# Type 设置
+Type=simple
+
+# 用户和组
+User=tope
+Group=tope
+
+# 工作目录
+WorkingDirectory=/opt/tope/services/device-api
+
+# 执行命令 - 使用符号链接指向当前版本
+# 符号链接: /usr/local/bin/device-api -> /opt/tope/versions/current/bin/device-api
+ExecStart=/usr/local/bin/device-api
+
+# 环境变量
+Environment="PYTHONUNBUFFERED=1"
+Environment="TOPE_ENV=production"
+
+# 重启策略
+Restart=always
+RestartSec=10
+
+# 进程管理
+# 进程文件
+PIDFile=/var/run/device-api.pid
+
+# 资源限制
+LimitNOFILE=65536
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=device-api
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

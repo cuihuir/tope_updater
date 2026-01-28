@@ -2,25 +2,27 @@
 
 OTA (Over-The-Air) update service for embedded 3D printer devices. Provides HTTP API for triggering downloads, verifying packages, and deploying updates with atomic file operations and safe process control.
 
-## Project Status (2026-01-14)
+## Project Status (2026-01-28)
 
-**Current Phase**: Phase 5-6 + Testing Infrastructure Complete, Production Readiness: ~85%
+**Current Phase**: Phase 1-2 Complete (Reporter + Version Snapshot), Production Readiness: ~90%
 
 - ✅ **Core OTA Workflow**: Download → Verify → Deploy (implemented & tested)
 - ✅ **Download Validation**: 3-layer validation (HTTP/size/MD5)
-- ✅ **Atomic Deployment**: Temp → verify → rename with auto-rollback
+- ✅ **Version Snapshot Architecture**: Symlink-based version management ⭐ NEW
+- ✅ **Two-Level Rollback**: Automatic rollback (previous → factory) ⭐ NEW
 - ✅ **Service Management**: Full systemd integration (stop/start/status)
 - ✅ **Error Handling**: Comprehensive error detection and recovery
 - ✅ **State Management**: Persistent state with restart recovery
-- ✅ **Rollback Mechanism**: Auto-restore backups on deployment failure
-- ✅ **Testing Infrastructure**: Complete pytest setup with unit tests ⭐ NEW
+- ✅ **Reporter Integration**: Progress reporting to device-api ⭐ NEW
+- ✅ **Testing Infrastructure**: Complete pytest setup with unit tests
   - pytest configuration (pytest.ini, pyproject.toml)
   - Global fixtures (conftest.py)
-  - Unit tests for download and state_manager services
+  - Unit tests for download, state_manager, version_manager
   - Mock servers (device-api, package server)
   - Test fixtures and test data
   - Manual test scripts (tests/manual/)
   - Test reports (tests/reports/)
+- ✅ **Version Snapshot Tests**: All 10 tests passing ⭐ NEW
 - ⚠️ **断点续传**: Optional - currently restarts download after interruption
 - ⚠️ **Integration Tests**: Unit tests complete, integration tests pending
 - ⚠️ **Deployment Testing**: Manual tests complete, E2E tests pending
@@ -139,6 +141,118 @@ Response example:
   }
 }
 ```
+
+## Architecture
+
+### Version Snapshot Architecture ⭐ NEW
+
+TOP.E OTA Updater 使用基于符号链接的版本快照架构，实现快速版本切换和可靠的回滚机制。
+
+#### 目录结构
+
+```
+/opt/tope/versions/
+├── v1.0.0/              # 版本快照目录
+│   ├── bin/
+│   ├── lib/
+│   └── services/
+├── v1.1.0/              # 新版本快照
+│   ├── bin/
+│   ├── lib/
+│   └── services/
+├── current -> v1.1.0/   # 当前运行版本（符号链接）
+├── previous -> v1.0.0/  # 上一个版本（符号链接）
+└── factory -> v1.0.0/   # 出厂版本（符号链接，只读）
+```
+
+#### 版本切换流程
+
+1. **部署新版本**
+   ```
+   创建版本目录 → 部署文件 → 更新符号链接
+   /opt/tope/versions/v1.1.0/ (新建)
+   current: v1.0.0 → v1.1.0 (原子切换)
+   previous: (无) → v1.0.0 (保存旧版本)
+   ```
+
+2. **符号链接原子更新**
+   ```python
+   # 使用 temp + rename 模式确保原子性
+   temp_link = ".current.tmp.12345"
+   temp_link.symlink_to("v1.1.0")
+   temp_link.replace("current")  # 原子操作
+   ```
+
+3. **服务启动配置**
+   ```ini
+   # /etc/systemd/system/device-api.service
+   [Service]
+   ExecStart=/usr/local/bin/device-api
+   WorkingDirectory=/opt/tope/services/device-api
+
+   # /usr/local/bin/device-api -> /opt/tope/versions/current/bin/device-api
+   # /opt/tope/services/device-api -> /opt/tope/versions/current/services/device-api
+   ```
+
+#### 两级回滚机制
+
+当部署失败时，系统自动执行两级回滚：
+
+**Level 1: 回滚到上一版本**
+```
+部署失败 → 回滚到 previous → 验证服务健康
+current: v1.1.0 → v1.0.0
+```
+
+**Level 2: 回滚到出厂版本**（如果 Level 1 失败）
+```
+Level 1 失败 → 回滚到 factory → 验证服务健康
+current: v1.0.0 → factory (v1.0.0)
+```
+
+**手动干预**（如果 Level 2 失败）
+```
+两级回滚都失败 → 记录错误 → 需要人工介入
+```
+
+#### 出厂版本管理
+
+出厂版本是系统的最后防线，具有以下特性：
+
+1. **创建出厂版本**
+   ```bash
+   # 使用部署脚本
+   sudo ./deploy/create_factory_version.sh
+
+   # 或手动创建
+   cd /opt/tope/versions
+   ln -sf v1.0.0 factory
+   chmod -R 0555 v1.0.0  # 设置只读
+   ```
+
+2. **只读保护**
+   - 目录权限：0555 (r-xr-xr-x)
+   - 文件权限：0444 (r--r--r--)
+   - 防止意外修改或删除
+
+3. **验证出厂版本**
+   ```bash
+   ./deploy/verify_setup.sh
+   ```
+
+#### 优势
+
+- ✅ **快速切换**: 符号链接切换 < 1ms
+- ✅ **原子操作**: 使用 rename() 确保原子性
+- ✅ **零停机**: 服务重启时间最小化
+- ✅ **可靠回滚**: 两级回滚机制
+- ✅ **空间高效**: 只保留必要版本
+- ✅ **易于管理**: 清晰的版本历史
+
+详细信息请参考：
+- [部署指南](docs/DEPLOYMENT.md)
+- [回滚指南](docs/ROLLBACK.md)
+- [符号链接配置](deploy/SYMLINK_SETUP.md)
 
 ## Testing
 

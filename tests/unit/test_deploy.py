@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 from datetime import datetime
 
 from updater.services.deploy import DeployService
+from updater.services.version_manager import VersionManager
 from updater.models.manifest import Manifest, ManifestModule
 from updater.models.status import StageEnum
 
@@ -32,11 +33,20 @@ class TestDeployService:
         return manager
 
     @pytest.fixture
-    def deploy_service(self, mock_state_manager, mock_process_manager):
+    def mock_version_manager(self):
+        """Mock VersionManager."""
+        manager = MagicMock()
+        manager.create_version_dir = MagicMock(return_value=Path("/tmp/versions/v1.0.0"))
+        manager.promote_version = MagicMock()
+        return manager
+
+    @pytest.fixture
+    def deploy_service(self, mock_state_manager, mock_process_manager, mock_version_manager):
         """Create DeployService instance with mocked dependencies."""
         return DeployService(
             state_manager=mock_state_manager,
-            process_manager=mock_process_manager
+            process_manager=mock_process_manager,
+            version_manager=mock_version_manager
         )
 
     @pytest.fixture

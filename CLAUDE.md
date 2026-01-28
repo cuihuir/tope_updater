@@ -1,13 +1,13 @@
 # tope_updater Development Guidelines
 
-Last updated: 2026-01-14
+Last updated: 2026-01-28
 
 ## Project Overview
 
 TOP.E OTA Updater - 防弹级 OTA 更新服务，用于嵌入式 3D 打印机设备的固件/软件更新。
 
 **Current Branch**: `001-updater-core`
-**Current Phase**: Phase 5-6 完成，Phase 7-10 待实现
+**Current Phase**: Phase 1-2 完成（Reporter + Version Snapshot），Phase 3+ 待规划
 
 ## Active Technologies
 
@@ -28,9 +28,10 @@ src/updater/
 │   └── models.py                # Pydantic 请求/响应模型
 ├── services/
 │   ├── download.py              # 异步下载服务 (httpx + 三层验证)
-│   ├── deploy.py                # 部署服务 (ZIP 解压 + 原子操作 + 回滚)
+│   ├── deploy.py                # 部署服务 (版本快照 + 两级回滚) ⭐ 重构
 │   ├── process.py               # systemd 服务管理 (stop/start/status)
-│   ├── reporter.py              # device-api 回调服务
+│   ├── reporter.py              # device-api 回调服务 (单例) ⭐ 新增
+│   ├── version_manager.py       # 版本快照管理 (符号链接) ⭐ 新增
 │   └── state_manager.py         # 状态持久化 (state.json + 单例)
 ├── models/
 │   ├── manifest.py              # Manifest 数据模型
@@ -47,15 +48,37 @@ specs/001-updater-core/
 ├── plan_cn.md                   # 中文实现计划
 ├── tasks.md                     # 任务清单与进度
 ├── data-model.md                # 数据模型文档
-├── testing-guide.md             # 测试基础设施指南 ⭐ 新增
+├── testing-guide.md             # 测试基础设施指南
 ├── quickstart.md                # 快速开始指南
 └── research.md                  # 技术调研
 
-tests/                           # 测试目录 (待完善)
+docs/                            # 文档目录 ⭐ 新增
+├── DEPLOYMENT.md                # 部署指南
+└── ROLLBACK.md                  # 回滚指南
+
+deploy/                          # 部署脚本 ⭐ 新增
+├── README.md                    # 脚本概述
+├── SYMLINK_SETUP.md             # 符号链接配置指南
+├── setup_symlinks.sh            # 符号链接设置脚本
+├── create_factory_version.sh   # 出厂版本创建脚本
+├── test_symlink_switch.sh       # 符号链接切换测试
+├── verify_setup.sh              # 配置验证脚本
+└── device-api.service.example   # systemd 服务示例
+
+tests/
 ├── conftest.py                  # 全局 fixtures
 ├── unit/                        # 单元测试
+│   ├── test_download.py
+│   ├── test_state_manager.py
+│   ├── test_deploy.py
+│   └── test_version_manager.py  ⭐ 新增
 ├── integration/                 # 集成测试
-└── contract/                    # 契约测试
+│   └── test_reporter_integration.py ⭐ 新增
+├── manual/                      # 手动测试脚本
+│   ├── test_version_snapshot.py ⭐ 新增
+│   └── test_two_level_rollback.py ⭐ 新增
+└── reports/                     # 测试报告
+    └── version_snapshot_test_report.md ⭐ 新增
 ```
 
 ## Commands
@@ -141,61 +164,280 @@ python test_full_deploy_flow.py
 ```
 API Layer (routes.py)
     ↓
-Service Layer (download.py, deploy.py, process.py)
+Service Layer (download.py, deploy.py, process.py, version_manager.py)
     ↓
 Data Layer (state_manager.py, models/)
 ```
 
 ### 2. 单例模式
 - `StateManager` 使用单例模式确保全局状态一致
+- `ReportService` 使用单例模式确保回调一致性
 - 所有服务通过 `state_manager = StateManager()` 获取单例
 
-### 3. 原子操作
-- 文件部署使用 `temp → verify → rename` 模式
-- 失败时自动回滚到备份
+### 3. 版本快照架构 ⭐ NEW (2026-01-28)
+
+**核心设计**: 使用符号链接实现快速版本切换和可靠回滚
+
+#### 3.1 目录结构
+```
+/opt/tope/versions/
+├── v1.0.0/              # 版本快照（完整目录）
+├── v1.1.0/              # 新版本快照
+├── current -> v1.1.0/   # 当前版本（符号链接）
+├── previous -> v1.0.0/  # 上一版本（符号链接）
+└── factory -> v1.0.0/   # 出厂版本（符号链接，只读）
+```
+
+#### 3.2 原子符号链接更新
+```python
+# 使用 temp + rename 模式确保原子性
+temp_link = Path(f".{link_name}.tmp.{os.getpid()}")
+temp_link.symlink_to(target)
+temp_link.replace(link_path)  # 原子操作
+```
+
+#### 3.3 两级回滚机制
+```
+部署失败
+    ↓
+Level 1: 回滚到 previous 版本
+    ↓ (如果失败)
+Level 2: 回滚到 factory 版本
+    ↓ (如果失败)
+手动干预
+```
+
+#### 3.4 设计优势
+- ✅ **快速切换**: 符号链接切换 < 1ms
+- ✅ **原子操作**: rename() 系统调用保证原子性
+- ✅ **零停机**: 最小化服务重启时间
+- ✅ **可靠回滚**: 两级回滚机制
+- ✅ **空间高效**: 只保留必要版本
+- ✅ **易于管理**: 清晰的版本历史
 
 ### 4. 错误处理
 - 所有异常必须记录日志
 - 用户可见错误使用结构化错误代码 (e.g., `DEPLOYMENT_FAILED`)
 - 区分可恢复错误和致命错误
+- 回滚失败时上报详细错误信息
+
+## Design Decisions ⭐ NEW
+
+### 决策 1: 为什么选择符号链接而不是文件级备份？
+
+**背景**: 原始设计使用逐文件备份（`file.version.timestamp.bak`）
+
+**问题**:
+- 备份和恢复速度慢（需要复制所有文件）
+- 难以管理版本历史
+- 回滚时需要逐个文件恢复
+- 无法快速切换版本
+
+**决策**: 采用符号链接 + 版本快照架构
+
+**理由**:
+1. **性能**: 符号链接切换 < 1ms，文件复制需要数秒到数分钟
+2. **原子性**: rename() 系统调用保证原子性，避免中间状态
+3. **可靠性**: 版本目录完整保留，回滚时无需复制文件
+4. **可维护性**: 清晰的版本历史，易于管理和调试
+5. **行业标准**: Docker、Kubernetes 等都使用类似机制
+
+**权衡**:
+- ❌ 磁盘空间占用更多（保留完整版本目录）
+- ✅ 但可以通过版本清理策略控制
+
+**实施日期**: 2026-01-28
+
+---
+
+### 决策 2: 为什么需要两级回滚？
+
+**背景**: 原始设计只有一级回滚（回滚到备份）
+
+**问题**:
+- 如果上一版本也有问题，系统无法恢复
+- 没有"最后防线"保证系统可用
+
+**决策**: 实现两级回滚机制（previous → factory）
+
+**理由**:
+1. **可靠性**: 出厂版本作为最后防线，保证系统始终可用
+2. **自动恢复**: 无需人工干预即可恢复到稳定状态
+3. **用户需求**: 用户明确要求"回退到上一个可用版本，如果版本还不可用就回退到出厂版本"
+4. **行业实践**: 嵌入式系统通常保留出厂版本作为恢复手段
+
+**权衡**:
+- ❌ 增加了复杂度（需要管理 factory 版本）
+- ✅ 但显著提高了系统可靠性
+
+**实施日期**: 2026-01-28
+
+---
+
+### 决策 3: 为什么出厂版本需要只读保护？
+
+**背景**: 出厂版本是系统的最后防线
+
+**问题**:
+- 如果出厂版本被意外修改或删除，系统将无法恢复
+- 需要防止误操作
+
+**决策**: 设置出厂版本为只读（0555 目录，0444 文件）
+
+**理由**:
+1. **防止误操作**: 只读权限防止意外修改或删除
+2. **明确标识**: 只读权限清晰标识这是受保护的版本
+3. **系统安全**: 即使 root 用户也需要显式移除保护才能修改
+
+**权衡**:
+- ❌ 更新出厂版本需要额外步骤（移除保护 → 更新 → 重新保护）
+- ✅ 但这是有意为之，强制用户谨慎操作
+
+**实施日期**: 2026-01-28
+
+---
+
+### 决策 4: 为什么 Reporter 使用单例模式？
+
+**背景**: Reporter 需要在多个服务中使用
+
+**问题**:
+- 如果每个服务创建独立的 Reporter 实例，可能导致状态不一致
+- HTTP 连接池管理复杂
+
+**决策**: Reporter 使用单例模式
+
+**理由**:
+1. **状态一致性**: 全局唯一实例确保状态一致
+2. **资源管理**: 共享 HTTP 连接池，避免资源浪费
+3. **简化使用**: 服务只需 `reporter = ReportService()` 即可获取实例
+
+**权衡**:
+- ❌ 单例模式增加了测试复杂度（需要重置单例）
+- ✅ 但通过 mock 可以解决测试问题
+
+**实施日期**: 2026-01-27
+
+---
+
+### 决策 5: 为什么回滚失败不阻塞 Reporter？
+
+**背景**: Reporter 需要上报回滚状态到 device-api
+
+**问题**:
+- 如果 device-api 不可用，Reporter 会失败
+- 是否应该阻塞回滚操作？
+
+**决策**: Reporter 失败不阻塞回滚操作
+
+**理由**:
+1. **可用性优先**: 回滚的目的是恢复系统，不应被上报失败阻塞
+2. **防御性编程**: Reporter 捕获所有异常，记录日志但继续执行
+3. **最终一致性**: device-api 恢复后可以通过 /progress 端点查询状态
+
+**权衡**:
+- ❌ device-api 可能无法实时感知回滚状态
+- ✅ 但系统可用性更重要
+
+**实施日期**: 2026-01-27
 
 ## Current Implementation Status
 
-### ✅ Completed (Phase 1-3, 5-6, Testing Infrastructure)
+### ✅ Completed (Phase 1-2: Reporter + Version Snapshot)
+- ✅ **Phase 1**: Reporter 集成 ⭐ NEW (2026-01-27)
+  - ReportService 单例实现
+  - 集成到 DownloadService 和 DeployService
+  - 进度上报（每 5% 和阶段转换）
+  - 错误上报（防御性错误处理）
+  - 集成测试通过
+
+- ✅ **Phase 2**: 版本快照架构 ⭐ NEW (2026-01-28)
+  - VersionManager 实现（331 行）
+  - 符号链接原子更新
+  - 版本目录管理
+  - 两级回滚机制
+  - 出厂版本管理（只读保护）
+  - DeployService 重构（793 行）
+  - 部署脚本（setup_symlinks.sh, create_factory_version.sh 等）
+  - 完整测试套件（10 个测试全部通过）
+  - 文档完善（DEPLOYMENT.md, ROLLBACK.md）
+
+### ✅ Previously Completed
 - ✅ **Phase 1**: 项目初始化
 - ✅ **Phase 2**: 基础组件
 - ✅ **Phase 3**: 基本 OTA 流程 (下载 → 验证 → 部署)
-- ✅ **Phase 5**: 原子部署 + 回滚机制
+- ✅ **Phase 5**: 原子部署（已被版本快照架构替代）
 - ✅ **Phase 6**: systemd 服务管理 (stop/start/status)
-- ✅ **Testing Infrastructure**: 完整的测试基础设施和单元测试 ⭐ NEW (2026-01-14)
+- ✅ **Testing Infrastructure**: 完整的测试基础设施和单元测试
   - pytest 配置 (pytest.ini, pyproject.toml)
   - 全局 fixtures (conftest.py)
-  - 单元测试 (test_download.py, test_state_manager.py)
+  - 单元测试 (test_download.py, test_state_manager.py, test_version_manager.py)
   - 测试 fixtures 和 mock 服务器
   - 手动测试脚本 (tests/manual/)
   - 测试报告 (tests/reports/)
 
-### ⚠️ Partially Completed (Phase 8)
-- ⚠️ **Phase 8**: 状态报告 (已实现回调，未测试)
+### ⚠️ Partially Completed
+- ⚠️ **Phase 4**: 断点续传 (可选功能，代码存在但未启用)
+- ⚠️ **Phase 7**: 启动自愈增强 (部分实现)
 
-### ❌ Not Started (Phase 4, 7, 9, 10)
-- ❌ **Phase 4**: 断点续传 (可选功能)
-- ❌ **Phase 7**: 启动自愈增强
+### ❌ Not Started
 - ❌ **Phase 9**: GUI 集成 (可选功能)
-- ❌ **Phase 10**: 完善与测试
+- ❌ **Phase 10**: 完善与测试 (持续进行中)
 
 ## Key Features Implemented
 
-### 1. 三层下载验证
+### 1. 版本快照架构 ⭐ NEW
+```python
+# 符号链接原子更新
+temp_link = Path(f".current.tmp.{os.getpid()}")
+temp_link.symlink_to("v1.1.0")
+temp_link.replace("current")  # 原子操作，< 1ms
+
+# 版本管理
+version_manager.create_version_dir("1.1.0")
+version_manager.promote_version("1.1.0")
+version_manager.rollback_to_previous()
+version_manager.rollback_to_factory()
+```
+
+### 2. 两级回滚机制 ⭐ NEW
+```python
+# Level 1: 回滚到上一版本
+await deploy_service.rollback_to_previous(manifest)
+
+# Level 2: 回滚到出厂版本（如果 Level 1 失败）
+await deploy_service.rollback_to_factory(manifest)
+
+# 自动回滚流程
+try:
+    await deploy_service.deploy_package(package_path, version)
+except Exception as e:
+    # 自动触发两级回滚
+    await deploy_service.perform_two_level_rollback(manifest, e)
+```
+
+### 3. 三层下载验证
 ```python
 # Layer 1: HTTP Content-Length
 # Layer 2: 业务层 package_size
 # Layer 3: MD5 完整性验证
 ```
 
-### 2. 原子文件部署
+### 4. Reporter 集成 ⭐ NEW
 ```python
-# temp 文件 → MD5 验证 → os.rename() → 原子替换
+# 单例模式
+reporter = ReportService()
+
+# 进度上报（每 5% 和阶段转换）
+await reporter.report_progress("downloading", 45, "Downloading...")
+
+# 错误上报（防御性处理，不阻塞操作）
+await reporter.report_progress("failed", 0, "Deployment failed", error="DEPLOYMENT_FAILED")
+```
+
+### 5. 原子文件部署（已被版本快照替代）
+```python
+# 旧方案：temp 文件 → MD5 验证 → os.rename() → 原子替换
 # 失败时自动回滚到备份
 ```
 
@@ -442,9 +684,53 @@ git push origin 001-updater-core
 - VII. systemd 服务管理: 使用 systemd 生命周期
 - X. 全面错误报告: 所有错误必须报告
 
-## Recent Changes (2026-01-14)
+## Recent Changes (2026-01-28)
 
-### Phase 6: systemd 服务管理重构
+### Phase 1: Reporter 集成 (2026-01-27)
+- 新增 `ReportService` 单例实现
+- 集成到 `DownloadService` 和 `DeployService`
+- 实现进度上报（每 5% 和阶段转换）
+- 实现错误上报（防御性错误处理）
+- 创建集成测试 `test_reporter_integration.py`
+
+### Phase 2: 版本快照架构 (2026-01-28)
+- 新增 `VersionManager` 服务（331 行）
+  - `create_version_dir()` - 创建版本目录
+  - `promote_version()` - 提升版本（更新符号链接）
+  - `rollback_to_previous()` - 回滚到上一版本
+  - `rollback_to_factory()` - 回滚到出厂版本
+  - `create_factory_version()` - 创建出厂版本
+  - `update_symlink()` - 原子符号链接更新
+- 重构 `DeployService`（793 行）
+  - 移除文件级备份逻辑
+  - 新增版本快照部署
+  - 新增两级回滚机制
+  - `perform_two_level_rollback()` - 自动两级回滚
+  - `verify_services_healthy()` - 服务健康检查
+- 创建部署脚本
+  - `setup_symlinks.sh` - 符号链接设置
+  - `create_factory_version.sh` - 出厂版本创建
+  - `test_symlink_switch.sh` - 符号链接切换测试
+  - `verify_setup.sh` - 配置验证
+  - `device-api.service.example` - systemd 服务示例
+- 创建测试套件
+  - `test_version_snapshot.py` - 版本快照基础测试（6 个测试）
+  - `test_two_level_rollback.py` - 两级回滚集成测试（4 个测试）
+  - `test_version_manager.py` - 单元测试（41 个测试）
+  - 所有测试通过 ✅
+- 创建文档
+  - `docs/DEPLOYMENT.md` - 部署指南
+  - `docs/ROLLBACK.md` - 回滚指南
+  - `deploy/SYMLINK_SETUP.md` - 符号链接配置指南
+  - `deploy/README.md` - 部署脚本概述
+  - `tests/reports/version_snapshot_test_report.md` - 测试报告
+- 更新文档
+  - `README.md` - 添加版本快照架构章节
+  - `CLAUDE.md` - 添加设计决策和架构原则
+
+### Previous Changes (2026-01-14)
+
+#### Phase 6: systemd 服务管理重构
 - 新增 `ServiceStatus` 枚举
 - 实现 `stop_service()`, `start_service()`, `get_service_status()`
 - 实现 `wait_for_service_status()` (带超时)
