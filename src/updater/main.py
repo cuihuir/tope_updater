@@ -149,7 +149,7 @@ curl http://localhost:12315/api/v1.0/progress
 curl -X POST http://localhost:12315/api/v1.0/update -H "Content-Type: application/json" -d '{"version":"1.0.0"}'
 ```
 
-📖 [部署指南](docs/DEPLOYMENT.md) | [回滚指南](docs/ROLLBACK.md) | [测试报告](tests/reports/version_snapshot_test_report.md)
+📖 **文档**: `docs/DEPLOYMENT.md` | `docs/ROLLBACK.md` | `tests/reports/version_snapshot_test_report.md`
     """,
     version="2.0.0",
     lifespan=lifespan,
