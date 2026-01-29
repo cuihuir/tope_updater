@@ -46,10 +46,11 @@ class Renderer:
             raise RuntimeError("Failed to initialize SDL_ttf")
 
         # 加载并处理 logo
-        logo_path = Path(__file__).parent / "assets" / "logo.png"
+        logo_filename = f"logo_{self.layout.logo_size}.png"
+        logo_path = Path(__file__).parent / "assets" / logo_filename
         self.logo: Optional[sdl2.SDL_Surface] = None
         if logo_path.exists():
-            self.logo = self._load_and_crop_logo(logo_path, self.layout.logo_size)
+            self.logo = self._load_logo(logo_path)
         else:
             print(f"Warning: Logo not found at {logo_path}")
 
@@ -70,56 +71,20 @@ class Renderer:
         if not self.font_large or not self.font_small:
             raise RuntimeError("Failed to load fonts")
 
-    def _load_and_crop_logo(self, logo_path: Path, target_size: int) -> sdl2.SDL_Surface:
+    def _load_logo(self, logo_path: Path) -> sdl2.SDL_Surface:
         """
-        加载 logo 并裁切/缩放为正方形
+        加载 logo PNG 文件
 
         Args:
             logo_path: logo 文件路径
-            target_size: 目标正方形边长
 
         Returns:
-            处理后的 SDL surface（正方形）
+            SDL surface
         """
-        # 加载原始 logo
-        original = sdlimage.IMG_Load(str(logo_path).encode('utf-8'))
-        if not original:
+        logo = sdlimage.IMG_Load(str(logo_path).encode('utf-8'))
+        if not logo:
             raise RuntimeError(f"Failed to load logo from {logo_path}")
-
-        orig_rect = original.contents.clip_rect
-        orig_width = orig_rect.w
-        orig_height = orig_rect.h
-
-        # 步骤 1: 居中裁切为正方形
-        crop_size = min(orig_width, orig_height)
-        crop_x = (orig_width - crop_size) // 2
-        crop_y = (orig_height - crop_size) // 2
-
-        # 创建裁切后的 surface
-        cropped = sdl2.SDL_CreateRGBSurface(
-            0, crop_size, crop_size, 32,
-            0xFF000000, 0x00FF0000, 0x0000FF00, 0x000000FF
-        )
-
-        src_rect = sdl2.SDL_Rect(crop_x, crop_y, crop_size, crop_size)
-        dst_rect = sdl2.SDL_Rect(0, 0, crop_size, crop_size)
-        sdl2.SDL_BlitSurface(original, src_rect, cropped, dst_rect)
-
-        # 步骤 2: 缩放到目标尺寸
-        scaled = sdl2.SDL_CreateRGBSurface(
-            0, target_size, target_size, 32,
-            0xFF000000, 0x00FF0000, 0x0000FF00, 0x000000FF
-        )
-
-        src_rect = sdl2.SDL_Rect(0, 0, crop_size, crop_size)
-        dst_rect = sdl2.SDL_Rect(0, 0, target_size, target_size)
-        sdl2.SDL_BlitScaled(cropped, src_rect, scaled, dst_rect)
-
-        # 清理临时 surface
-        sdl2.SDL_FreeSurface(original)
-        sdl2.SDL_FreeSurface(cropped)
-
-        return scaled
+        return logo
 
     def render_progress(self, surface: sdl2.SDL_Surface, message: str, progress: int):
         """
