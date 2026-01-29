@@ -19,8 +19,12 @@ from updater.services.download import DownloadService
 from updater.services.deploy import DeployService
 from updater.services.process import ProcessManager
 from updater.services.reporter import ReportService
+from updater.gui.launcher import GUILauncher
+
+import logging
 
 router = APIRouter(prefix="/api/v1.0")
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -336,8 +340,15 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
             },
         )
 
+    # Start GUI (NEW)
+    gui_launcher = GUILauncher()
+    gui_started = gui_launcher.start()
+
+    if not gui_started:
+        logger.warning("Failed to start GUI, continuing without visual feedback")
+
     # Start update in background
-    background_tasks.add_task(_update_workflow, request.version)
+    background_tasks.add_task(_update_workflow, request.version, gui_launcher)
 
     return JSONResponse(
         status_code=200,
@@ -368,7 +379,7 @@ async def _download_workflow(
         pass
 
 
-async def _update_workflow(version: str) -> None:
+async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
     """Background task for update workflow."""
     state_manager = StateManager()
     reporter = ReportService()
@@ -399,3 +410,9 @@ async def _update_workflow(version: str) -> None:
             message="Update failed",
             error=f"UPDATE_FAILED: {str(e)}",
         )
+
+    finally:
+        # Stop GUI (NEW)
+        if gui_launcher.is_running():
+            gui_launcher.stop()
+            logger.info("GUI stopped")
