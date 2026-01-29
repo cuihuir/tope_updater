@@ -24,14 +24,16 @@ class ProgressWindow:
     - 自动关闭
     """
 
-    def __init__(self, updater_url: str = "http://localhost:12315"):
+    def __init__(self, updater_url: str = "http://localhost:12315", fullscreen: bool = True):
         """
         初始化进度窗口
 
         Args:
             updater_url: Updater API 地址
+            fullscreen: 是否全屏模式（默认 True）
         """
         self.updater_url = updater_url
+        self.fullscreen = fullscreen
         self.running = False
         self.window: Optional[sdl2.SDL_Window] = None
         self.renderer: Optional[Renderer] = None
@@ -51,21 +53,45 @@ class ProgressWindow:
         screen_width = display_mode.w
         screen_height = display_mode.h
 
-        print(f"Creating window: {screen_width}x{screen_height}")
+        print(f"Creating window: {screen_width}x{screen_height} (fullscreen={self.fullscreen})")
 
         # 创建窗口
+        window_flags = sdl2.SDL_WINDOW_SHOWN
+        if self.fullscreen:
+            window_flags |= sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP
+
         self.window = sdl2.SDL_CreateWindow(
             b"OTA Update",
             sdl2.SDL_WINDOWPOS_CENTERED,
             sdl2.SDL_WINDOWPOS_CENTERED,
-            screen_width,
-            screen_height,
-            sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP | sdl2.SDL_WINDOW_ALWAYS_ON_TOP
+            screen_width if not self.fullscreen else screen_width,
+            screen_height if not self.fullscreen else screen_height,
+            window_flags
         )
 
         if not self.window:
             error = sdl2.SDL_GetError()
             raise RuntimeError(f"Failed to create window: {error.decode('utf-8')}")
+
+        # 设置窗口置顶（在创建后设置）
+        sdl2.SDL_RaiseWindow(self.window)
+
+        # 尝试设置窗口为始终置顶（X11）
+        try:
+            from ctypes import c_int, c_void_p, POINTER
+            import ctypes
+
+            # 获取 SDL 窗口信息
+            wm_info = sdl2.SDL_SysWMinfo()
+            sdl2.SDL_VERSION(wm_info.version)
+
+            if sdl2.SDL_GetWindowWMInfo(self.window, ctypes.byref(wm_info)):
+                # 如果是 X11，设置窗口属性
+                if wm_info.subsystem == sdl2.SDL_SYSWM_X11:
+                    print("Setting X11 window to always on top")
+                    # 这里可以添加 X11 特定的置顶代码
+        except Exception as e:
+            print(f"Warning: Could not set always on top: {e}")
 
         # 创建渲染器
         self.renderer = Renderer(screen_width, screen_height)
@@ -97,6 +123,7 @@ class ProgressWindow:
         """主事件循环"""
         self.running = True
         last_poll = time.time()
+        last_raise = time.time()
         current_data = {
             "stage": "idle",
             "progress": 0,
@@ -110,8 +137,13 @@ class ProgressWindow:
                 if event.type == sdl2.SDL_QUIT:
                     self.running = False
 
-            # 每 500ms 轮询一次进度
+            # 每 2 秒提升窗口一次（保持在最前面）
             now = time.time()
+            if now - last_raise >= 2.0:
+                sdl2.SDL_RaiseWindow(self.window)
+                last_raise = now
+
+            # 每 500ms 轮询一次进度
             if now - last_poll >= 0.5:
                 current_data = self.fetch_progress()
                 last_poll = now
