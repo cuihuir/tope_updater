@@ -11,17 +11,38 @@
 
 | 状态 | 数量 |
 |------|------|
-| 🔴 待修复 (Open) | 0 |
+| 🔴 待修复 (Open) | 1 |
 | 🟡 进行中 (In Progress) | 0 |
-| 🟢 已修复 (Fixed) | 0 |
+| 🟢 已修复 (Fixed) | 5 |
 | ⚫ 已关闭 (Closed) | 1 |
-| **总计** | **1** |
+| **总计** | **7** |
 
 ---
 
 ## 🔴 待修复 Bug (Open)
 
-_暂无_
+### BUG-005: 更新 device-api 自身时 Reporter 无法回调
+
+**严重程度**: 🟢 Low
+**发现日期**: 2026-02-26
+**发现者**: 真实升级测试
+**发现位置**: 升级 device-api 0.0.2 全流程测试
+**状态**: 🔴 Open
+
+#### 问题描述
+当升级包含 device-api 本身时，updater 的 reporter 在部署阶段无法连接 device-api（All connection attempts failed），导致进度无法实时上报。
+
+#### 根本原因
+升级 device-api 时，deploy 流程会先 `systemctl stop device-api`，此后 device-api 进程不再运行，reporter 自然无法连接。这是升级自身服务的固有问题，不是代码 bug。
+
+#### 影响范围
+仅影响升级 device-api 本身的场景。升级其他服务时 reporter 应正常工作。
+
+#### 待验证
+- ⏳ 升级非 device-api 服务时，reporter 是否能正常上报进度
+
+#### 备注
+reporter 失败不阻塞主流程（防御性处理），升级仍然成功完成。
 
 ---
 
@@ -31,9 +52,128 @@ _暂无_
 
 ---
 
-## 🟢 已修复 Bug (Fixed)
+### BUG-006: manifest 未赋值时 perform_two_level_rollback 抛出 UnboundLocalError
 
-_暂无_
+**严重程度**: 🔴 High
+**发现日期**: 2026-02-26
+**修复日期**: 2026-02-26
+**发现者**: 真实升级测试（版本目录已存在场景）
+**修复者**: Claude Code
+**发现位置**: `src/updater/services/deploy.py::deploy_package`
+**状态**: 🟢 Fixed
+
+#### 问题描述
+当 Step 1（创建版本目录）失败时，`manifest` 变量尚未赋值，但 `except` 块中直接调用 `perform_two_level_rollback(manifest, e)`，导致 `UnboundLocalError: cannot access local variable 'manifest'`。
+
+#### 根本原因
+`manifest` 变量在 try 块内部赋值（Step 2），但 except 块无条件使用它。当异常发生在 Step 2 之前时变量未初始化。
+
+#### 修复方案
+在 try 块前初始化 `manifest = None`，except 块中判断 `if manifest is not None` 再执行回滚。
+
+---
+
+### BUG-007: GUI fetch_progress 未取 data 层导致 progress 为 None 崩溃
+
+**严重程度**: 🔴 High
+**发现日期**: 2026-02-26
+**修复日期**: 2026-02-26
+**发现者**: GUI 延迟测试
+**修复者**: Claude Code
+**发现位置**: `src/updater/gui/progress_window.py::fetch_progress`
+**状态**: 🟢 Fixed
+
+#### 问题描述
+GUI 在安装过程中崩溃退出，`renderer.py` 抛出 `TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'`，导致进度条无法渲染。
+
+#### 根本原因
+`/api/v1.0/progress` 返回结构为 `{"code":200, "data": {"stage":..., "progress":...}}`，但 `fetch_progress` 直接返回整个 JSON，`run()` 用 `current_data.get("progress", 0)` 取到的是顶层的 `null` 而非 `data.progress`。
+
+#### 修复方案
+```python
+# 修复前
+return response.json()
+# 修复后
+return response.json().get("data", {})
+```
+
+---
+
+### BUG-002: _start_services 中 'str' object has no attribute 'value' 错误
+
+**严重程度**: 🟡 Medium
+**发现日期**: 2026-02-26
+**修复日期**: 2026-02-26
+**发现者**: 真实升级测试日志
+**修复者**: Claude Code
+**发现位置**: `src/updater/services/deploy.py::_start_services`
+**状态**: 🟢 Fixed
+
+#### 问题描述
+`_start_services` 调用 `wait_for_service_status` 时传入字符串 `"active"` 而非 `ServiceStatus.ACTIVE` 枚举，导致比较失败并抛出 `AttributeError: 'str' object has no attribute 'value'`。服务实际已启动成功，但错误被静默吞掉。
+
+#### 代码位置
+- **文件**: `src/updater/services/deploy.py`
+- **函数**: `_start_services()`
+- **行号**: 464
+
+#### 根本原因
+`wait_for_service_status` 的 `target_status` 参数类型为 `ServiceStatus` 枚举，但调用时传入了字符串 `"active"`，导致内部 `current_status == target_status` 比较时访问 `.value` 失败。
+
+#### 修复方案
+```python
+# 修复前
+await self.process_manager.wait_for_service_status(
+    service_name, target_status="active", timeout=30
+)
+# 修复后
+await self.process_manager.wait_for_service_status(
+    service_name, target_status=ServiceStatus.ACTIVE, timeout=30
+)
+```
+同时在 deploy.py 顶部补充导入 `ServiceStatus`。
+
+---
+
+### BUG-003: 安装成功后状态永久停留在 success，不自动重置为 idle
+
+**严重程度**: 🟡 Medium
+**发现日期**: 2026-02-26
+**修复日期**: 2026-02-26
+**发现者**: 真实升级测试
+**修复者**: Claude Code
+**发现位置**: `src/updater/api/routes.py::_update_workflow`
+**状态**: 🟢 Fixed
+
+#### 问题描述
+安装完成后状态永久停留在 `success 100%`，不会自动归位到 `idle`，导致下次升级前必须手动重置 state.json。
+
+#### 根本原因
+`_update_workflow` 成功后只调用了 `state_manager.delete_state()`（删除持久化文件），未调用 `state_manager.reset()`（重置内存状态）。
+
+#### 修复方案
+在 `delete_state()` 后延迟 5 秒再调用 `reset()`，让调用方有足够时间读取到 success 状态。
+
+---
+
+### BUG-004: dst 路径不在 /opt/tope/ 下时文件未实际覆盖目标
+
+**严重程度**: 🔴 High
+**发现日期**: 2026-02-26
+**修复日期**: 2026-02-26
+**发现者**: 真实升级测试
+**修复者**: Claude Code
+**发现位置**: `src/updater/services/deploy.py::_deploy_module_to_version`
+**状态**: 🟢 Fixed
+
+#### 问题描述
+manifest 中 `dst` 路径不以 `/opt/tope/` 开头时，文件只被写入版本快照目录（`/opt/tope/versions/vX.Y.Z/...`），未同步到实际目标路径，导致升级后目标文件未更新。
+
+#### 根本原因
+`_deploy_module_to_version` 设计上只写版本目录，依赖符号链接指向。但当 `dst` 不在 `/opt/tope/` 下时，没有符号链接机制将文件映射到实际路径。
+
+#### 修复方案
+当 `dst` 不以 `/opt/tope/` 开头时，在写入版本目录后额外用 `shutil.copy2` 同步到实际绝对路径。
 
 ---
 
@@ -228,6 +368,10 @@ async with httpx.AsyncClient(timeout=30.0) as client:
 | 2026-01-14 | 创建文档 | 初始化 bug 跟踪系统 |
 | 2026-01-14 | 添加 BUG-001 | download.py expected_from_server 未初始化 |
 | 2026-01-14 | 修复 BUG-001 | 在函数开始处初始化 expected_from_server 变量 |
+| 2026-02-26 | 添加 BUG-002~005 | 真实升级测试发现 4 个问题 |
+| 2026-02-26 | 修复 BUG-002 | deploy.py _start_services 传入 ServiceStatus 枚举 |
+| 2026-02-26 | 修复 BUG-003 | 安装成功后 5s 自动 reset 到 idle |
+| 2026-02-26 | 修复 BUG-004 | 非 /opt/tope/ 路径同步到实际 dst |
 
 ---
 
