@@ -60,3 +60,4 @@ backups/
 .DS_Store
 Thumbs.db
 .specify
+tests/e2e/test_data/packages/*.zip

@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DATA_DIR = PROJECT_ROOT / "tests" / "e2e" / "test_data"
 TEST_PACKAGES_DIR = TEST_DATA_DIR / "packages"
-TMP_DIR = PROJECT_ROOT / "tmp_e2e"
-LOGS_DIR = PROJECT_ROOT / "logs_e2e"
-BACKUPS_DIR = PROJECT_ROOT / "backups_e2e"
+TMP_DIR = PROJECT_ROOT / "tmp" / "e2e"
+LOGS_DIR = PROJECT_ROOT / "logs" / "e2e"
+BACKUPS_DIR = PROJECT_ROOT / "backups" / "e2e"
 
 # Constants
 UPDATER_PORT = 12315

@@ -30,7 +30,7 @@ import logging
 from updater.models.manifest import Manifest
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
-from updater.services.process import ProcessManager
+from updater.services.process import ProcessManager, ServiceStatus
 from updater.services.reporter import ReportService
 from updater.services.version_manager import VersionManager
 
@@ -100,6 +100,7 @@ class DeployService:
 
         # Track version directory for cleanup on failure
         version_dir = None
+        manifest = None
 
         try:
             # Step 1: Create version snapshot directory
@@ -254,12 +255,16 @@ class DeployService:
                 )
 
             # Perform two-level rollback: previous → factory
-            try:
-                await self.perform_two_level_rollback(manifest, e)
-            except Exception as rollback_error:
-                # Both rollback levels failed
-                self.logger.error(f"Two-level rollback failed: {rollback_error}")
-                raise rollback_error
+            # Only if manifest was parsed (otherwise we don't know which services to manage)
+            if manifest is not None:
+                try:
+                    await self.perform_two_level_rollback(manifest, e)
+                except Exception as rollback_error:
+                    # Both rollback levels failed
+                    self.logger.error(f"Two-level rollback failed: {rollback_error}")
+                    raise rollback_error
+            else:
+                self.logger.warning("Manifest not available, skipping rollback")
 
             # Rollback succeeded but still report original failure
             raise RuntimeError(f"DEPLOYMENT_FAILED: {e}\nRollback completed.") from e
@@ -356,13 +361,28 @@ class DeployService:
                 # Extract to temporary file first (atomic operation)
                 tmp_path = final_dst.parent / f"{final_dst.name}.tmp"
                 try:
+                    zip_info = zf.getinfo(src_path)
+                    # Extract Unix permission bits from ZIP external_attr (high 16 bits)
+                    unix_mode = (zip_info.external_attr >> 16) & 0xFFFF
+
                     with zf.open(src_path) as src_file:
                         with open(tmp_path, "wb") as tmp_file:
                             shutil.copyfileobj(src_file, tmp_file)
 
+                    # Apply original permissions if available
+                    if unix_mode:
+                        tmp_path.chmod(unix_mode)
+
                     # Atomic rename to final destination
                     tmp_path.rename(final_dst)
                     self.logger.info(f"✓ Deployed {module.name} to {final_dst}")
+
+                    # If dst is not under /opt/tope/, also copy to actual absolute path
+                    # shutil.copy preserves permission bits
+                    if not str(dst_path_absolute).startswith("/opt/tope"):
+                        dst_path_absolute.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(final_dst, dst_path_absolute)
+                        self.logger.info(f"✓ Synced {module.name} to actual dst: {dst_path_absolute}")
 
                 except Exception as e:
                     # Cleanup temp file on error
@@ -463,7 +483,7 @@ class DeployService:
                 # Wait for service to be active
                 await self.process_manager.wait_for_service_status(
                     service_name,
-                    target_status="active",
+                    target_status=ServiceStatus.ACTIVE,
                     timeout=30
                 )
                 self.logger.info(f"✓ Started {service_name}")
