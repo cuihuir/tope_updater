@@ -78,7 +78,6 @@ class ProgressWindow:
 
         # 尝试设置窗口为始终置顶（X11）
         try:
-            from ctypes import c_int, c_void_p, POINTER
             import ctypes
 
             # 获取 SDL 窗口信息
@@ -109,7 +108,7 @@ class ProgressWindow:
                 timeout=2.0
             )
             response.raise_for_status()
-            return response.json()
+            return response.json().get("data", {})
         except Exception as e:
             # 返回错误状态
             return {
@@ -161,9 +160,41 @@ class ProgressWindow:
             # 检查更新是否完成
             stage = current_data.get("stage")
             if stage in ["success", "failed"]:
-                # 显示最终状态 3 秒
-                time.sleep(3)
-                self.running = False
+                # 进入倒计时模式
+                countdown_total = 60
+                countdown_start = time.time()
+                final_message = current_data.get("message", "")
+
+                while self.running:
+                    # 处理事件
+                    event = sdl2.SDL_Event()
+                    while sdl2.SDL_PollEvent(event) != 0:
+                        if event.type == sdl2.SDL_QUIT:
+                            self.running = False
+                        elif event.type == sdl2.SDL_MOUSEBUTTONDOWN:
+                            mx, my = event.button.x, event.button.y
+                            bx = self.renderer.layout.button_x
+                            by = self.renderer.layout.button_y
+                            bw = self.renderer.layout.button_width
+                            bh = self.renderer.layout.button_height
+                            if bx <= mx <= bx + bw and by <= my <= by + bh:
+                                self.running = False
+
+                    elapsed = time.time() - countdown_start
+                    remaining = max(0, countdown_total - int(elapsed))
+
+                    if remaining == 0:
+                        self.running = False
+                        break
+
+                    # 渲染完成状态
+                    surface = sdl2.SDL_GetWindowSurface(self.window)
+                    if surface:
+                        self.renderer.render_completion(surface, final_message, remaining)
+                        sdl2.SDL_UpdateWindowSurface(self.window)
+
+                    sdl2.SDL_Delay(50)
+                break
 
             # 小延迟以减少 CPU 使用
             sdl2.SDL_Delay(50)

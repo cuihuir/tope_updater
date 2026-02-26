@@ -67,27 +67,20 @@ class GUILauncher:
             return False
 
         try:
-            # 尝试优雅终止
-            self.process.terminate()
-
-            try:
-                self.process.wait(timeout=timeout)
-                logger.info("GUI process terminated gracefully")
-            except subprocess.TimeoutExpired:
-                # 超时则强制杀死
-                logger.warning("GUI process did not terminate, forcing kill")
-                self.process.kill()
+            if self.process.poll() is None:
+                # 进程还在运行，发送终止信号
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=timeout)
+                    logger.info("GUI process terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    logger.warning("GUI process did not terminate, forcing kill")
+                    self.process.kill()
+                    self.process.wait()
+            else:
+                # 进程已退出但未被 wait，回收僵尸进程
                 self.process.wait()
-
-            # 记录输出
-            try:
-                stdout, stderr = self.process.communicate(timeout=1)
-                if stdout:
-                    logger.debug(f"GUI stdout: {stdout.decode()}")
-                if stderr:
-                    logger.warning(f"GUI stderr: {stderr.decode()}")
-            except subprocess.TimeoutExpired:
-                pass
+                logger.info("GUI process already exited, reaped zombie")
 
             self.process = None
             return True

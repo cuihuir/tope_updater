@@ -51,6 +51,15 @@ class LayoutConfig:
         # 百分比
         self.percent_y = self.progress_y + 50
 
+        # 完成按钮（进度条下方居中）
+        self.button_width = min(300, int(self.content_width * 0.3))
+        self.button_height = max(50, self.font_size_large + 20)
+        self.button_x = self.content_x + (self.content_width - self.button_width) // 2
+        self.button_y = self.percent_y + self.font_size_small + 30
+
+        # 倒计时文字（按钮下方）
+        self.countdown_y = self.button_y + self.button_height + 20
+
     def _calculate_logo_size(self) -> int:
         """
         计算 logo 尺寸（正方形边长）

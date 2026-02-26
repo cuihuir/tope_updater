@@ -11,13 +11,11 @@ from updater.api.models import (
     UpdateRequest,
     ProgressResponse,
     SuccessResponse,
-    ErrorResponse,
 )
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
 from updater.services.download import DownloadService
 from updater.services.deploy import DeployService
-from updater.services.process import ProcessManager
 from updater.services.reporter import ReportService
 from updater.gui.launcher import GUILauncher
 
@@ -374,7 +372,7 @@ async def _download_workflow(
             package_size=package_size,
             package_md5=package_md5,
         )
-    except Exception as e:
+    except Exception:
         # Errors already logged and state updated in DownloadService
         pass
 
@@ -403,6 +401,10 @@ async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
         # Cleanup
         state_manager.delete_state()
 
+        # Reset to idle after success so next upgrade can proceed
+        await asyncio.sleep(65)
+        state_manager.reset()
+
     except Exception as e:
         state_manager.update_status(
             stage=StageEnum.FAILED,
@@ -412,7 +414,5 @@ async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
         )
 
     finally:
-        # Stop GUI (NEW)
-        if gui_launcher.is_running():
-            gui_launcher.stop()
-            logger.info("GUI stopped")
+        # Stop GUI - always call stop() to reap zombie process even if GUI already exited
+        gui_launcher.stop()

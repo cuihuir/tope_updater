@@ -132,6 +132,56 @@ class Renderer:
             self.layout.content_width
         )
 
+    def render_completion(
+        self,
+        surface: sdl2.SDL_Surface,
+        message: str,
+        countdown: int,
+        button_hovered: bool = False
+    ):
+        """
+        渲染完成状态 UI（success/failed）
+
+        Args:
+            surface: 目标 surface
+            message: 状态消息
+            countdown: 剩余秒数 (0-60)
+            button_hovered: 按钮是否悬停（保留扩展性）
+        """
+        # 清屏
+        sdl2.ext.fill(surface, sdl2.ext.Color(0, 0, 0))
+
+        # Logo
+        if self.logo:
+            self._render_logo(surface)
+
+        # 状态消息
+        self._render_text_centered(
+            surface, message, self.font_large,
+            self.layout.content_x, self.layout.text_y, self.layout.content_width
+        )
+
+        # 完成按钮
+        btn_color = sdl2.ext.Color(0, 220, 0) if button_hovered else sdl2.ext.Color(0, 180, 0)
+        btn_rect = sdl2.SDL_Rect(
+            self.layout.button_x, self.layout.button_y,
+            self.layout.button_width, self.layout.button_height
+        )
+        sdl2.ext.fill(surface, btn_color, btn_rect)
+        self._render_text_centered(
+            surface, "完成安装", self.font_small,
+            self.layout.button_x,
+            self.layout.button_y + (self.layout.button_height - self.layout.font_size_small) // 2,
+            self.layout.button_width
+        )
+
+        # 倒计时文字
+        countdown_text = f"{countdown} 秒后自动关闭"
+        self._render_text_centered(
+            surface, countdown_text, self.font_small,
+            self.layout.content_x, self.layout.countdown_y, self.layout.content_width
+        )
+
     def _render_logo(self, surface: sdl2.SDL_Surface):
         """渲染 logo（左侧居中）"""
         logo_rect = sdl2.SDL_Rect(
