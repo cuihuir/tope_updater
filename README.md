@@ -2,6 +2,10 @@
 
 用于嵌入式 3D 打印机设备的 OTA (Over-The-Air) 更新服务。提供 HTTP API，支持固件/软件的下载、验证和部署，具备版本快照回滚、SDL2 GUI 进度窗口和 systemd 集成。
 
+![安装成功界面](docs/screenshots/gui_success.png)
+
+> GUI 安装完成界面：左侧品牌 Logo、中部安装日志、右侧完成按钮与倒计时
+
 ## 项目状态（2026-02-28）
 
 **当前分支**: `master`
