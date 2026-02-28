@@ -19,6 +19,7 @@ Rollback workflow:
 - Level 2: Rollback to factory version (if previous fails)
 """
 
+import asyncio
 import json
 import shutil
 import zipfile
@@ -171,6 +172,9 @@ class DeployService:
                 await self._deploy_module_to_version(
                     package_path, module, version_dir
                 )
+
+                # Run post-deployment commands (e.g. daemon-reload, sysctl -p)
+                await self._run_post_cmds(module)
 
             # Step 5: Start services
             # Note: Services will read from version directory via symlinks
@@ -393,6 +397,50 @@ class DeployService:
         except Exception as e:
             self.logger.error(f"Failed to deploy {module.name}: {e}")
             raise
+
+    async def _run_post_cmds(self, module) -> None:
+        """Run post-deployment shell commands for a module.
+
+        Commands are executed in order. If any command exits with a non-zero
+        code or times out, a RuntimeError is raised and deployment fails.
+
+        Args:
+            module: ManifestModule whose post_cmds to run
+
+        Raises:
+            RuntimeError: If a command fails or times out (30s per command)
+        """
+        if not module.post_cmds:
+            return
+
+        for cmd in module.post_cmds:
+            self.logger.info(f"Running post_cmd [{module.name}]: {cmd}")
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise RuntimeError(
+                    f"POST_CMD_TIMEOUT: '{cmd}' timed out after 30s"
+                )
+
+            if proc.returncode != 0:
+                err = stderr.decode().strip()
+                out = stdout.decode().strip()
+                raise RuntimeError(
+                    f"POST_CMD_FAILED: '{cmd}' exited {proc.returncode}"
+                    + (f" — {err}" if err else "")
+                    + (f" | stdout: {out}" if out else "")
+                )
+
+            self.logger.info(f"✓ post_cmd OK [{module.name}]: {cmd}")
 
     def _get_relative_destination(self, absolute_dst: Path) -> Path:
         """Convert absolute destination to relative path in version directory.

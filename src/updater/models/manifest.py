@@ -25,6 +25,14 @@ class ManifestModule(BaseModel):
     restart_order: Optional[int] = Field(
         None, description="Service restart sequence (lower = earlier)"
     )
+    post_cmds: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Shell commands to run after file deployment, in order. "
+            "Examples: 'systemctl daemon-reload', 'sysctl -p /etc/sysctl.d/myapp.conf', "
+            "'ufw reload'. Each command must exit 0 or deployment fails."
+        ),
+    )
 
     @field_validator("src")
     @classmethod

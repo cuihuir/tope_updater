@@ -1,5 +1,6 @@
 """Unit tests for DeployService."""
 
+import asyncio
 import pytest
 import json
 import zipfile
@@ -608,3 +609,132 @@ class TestDeployService:
         final_call = mock_state_manager.update_status.call_args_list[-1]
         assert final_call[1]['stage'] == StageEnum.SUCCESS
         assert final_call[1]['progress'] == 100
+
+@pytest.mark.unit
+class TestPostCmds:
+    """Unit tests for post_cmds execution in DeployService."""
+
+    @pytest.fixture
+    def deploy_service(self):
+        """Create DeployService with mocked dependencies."""
+        return DeployService(
+            state_manager=MagicMock(),
+            process_manager=AsyncMock(),
+            version_manager=MagicMock(),
+        )
+
+    @pytest.fixture
+    def module_no_cmds(self):
+        return ManifestModule(
+            name="plain-file",
+            src="bin/plain",
+            dst="/opt/tope/bin/plain",
+        )
+
+    @pytest.fixture
+    def module_with_cmds(self):
+        return ManifestModule(
+            name="config",
+            src="etc/config.txt",
+            dst="/etc/myapp/config.txt",
+            post_cmds=["echo ok", "true"],
+        )
+
+    # --- ManifestModule schema tests ---
+
+    def test_post_cmds_defaults_to_none(self, module_no_cmds):
+        assert module_no_cmds.post_cmds is None
+
+    def test_post_cmds_accepts_list_of_strings(self, module_with_cmds):
+        assert module_with_cmds.post_cmds == ["echo ok", "true"]
+
+    def test_post_cmds_accepts_empty_list(self):
+        m = ManifestModule(
+            name="m", src="a/b", dst="/opt/tope/b", post_cmds=[]
+        )
+        assert m.post_cmds == []
+
+    # --- _run_post_cmds tests ---
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_skips_when_none(self, deploy_service, module_no_cmds):
+        """No-op when post_cmds is None."""
+        # Should return without error and without launching any subprocess
+        await deploy_service._run_post_cmds(module_no_cmds)
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_skips_when_empty(self, deploy_service):
+        module = ManifestModule(
+            name="m", src="a/b", dst="/opt/tope/b", post_cmds=[]
+        )
+        await deploy_service._run_post_cmds(module)
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_success(self, deploy_service, tmp_path):
+        """Successful commands produce no exception."""
+        sentinel = tmp_path / "post_cmd_ran.txt"
+        module = ManifestModule(
+            name="m",
+            src="a/b",
+            dst="/opt/tope/b",
+            post_cmds=[f"touch {sentinel}"],
+        )
+        await deploy_service._run_post_cmds(module)
+        assert sentinel.exists()
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_multiple_in_order(self, deploy_service, tmp_path):
+        """Multiple commands run sequentially in declared order."""
+        log = tmp_path / "order.log"
+        module = ManifestModule(
+            name="m",
+            src="a/b",
+            dst="/opt/tope/b",
+            post_cmds=[
+                f"echo first >> {log}",
+                f"echo second >> {log}",
+                f"echo third >> {log}",
+            ],
+        )
+        await deploy_service._run_post_cmds(module)
+        lines = log.read_text().splitlines()
+        assert lines == ["first", "second", "third"]
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_failure_raises(self, deploy_service):
+        """Non-zero exit code raises RuntimeError with POST_CMD_FAILED prefix."""
+        module = ManifestModule(
+            name="m",
+            src="a/b",
+            dst="/opt/tope/b",
+            post_cmds=["false"],
+        )
+        with pytest.raises(RuntimeError, match="POST_CMD_FAILED"):
+            await deploy_service._run_post_cmds(module)
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_failure_stops_at_first_error(self, deploy_service, tmp_path):
+        """Remaining commands are not executed after a failure."""
+        sentinel = tmp_path / "should_not_exist.txt"
+        module = ManifestModule(
+            name="m",
+            src="a/b",
+            dst="/opt/tope/b",
+            post_cmds=["false", f"touch {sentinel}"],
+        )
+        with pytest.raises(RuntimeError, match="POST_CMD_FAILED"):
+            await deploy_service._run_post_cmds(module)
+        assert not sentinel.exists()
+
+    @pytest.mark.asyncio
+    async def test_run_post_cmds_timeout_raises(self, deploy_service):
+        """Commands exceeding 30 s raise RuntimeError with POST_CMD_TIMEOUT prefix."""
+        module = ManifestModule(
+            name="m",
+            src="a/b",
+            dst="/opt/tope/b",
+            post_cmds=["sleep 100"],
+        )
+        with patch("updater.services.deploy.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            with pytest.raises(RuntimeError, match="POST_CMD_TIMEOUT"):
+                await deploy_service._run_post_cmds(module)
