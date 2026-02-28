@@ -38,7 +38,8 @@ uv.lock
 tests/reports/htmlcov/
 tests/reports/test-report.html
 tests/reports/*.html
-assets/
+# GUI assets are tracked; exclude only project-level asset dump dirs
+/assets/
 
 # Documentation
 *.pdf  # Ignore PDF files in doc/ folder

@@ -21,7 +21,9 @@ for i in range(0, 101, 10):
     window.renderer.render_progress(
         surface,
         f"正在升级系统... ({i}%)",
-        i
+        i,
+        ["下载完成 (564B)", "MD5 验证通过"] if i > 30 else [],
+        "installing",
     )
     
     sdl2.SDL_UpdateWindowSurface(window.window)
