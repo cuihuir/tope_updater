@@ -12,6 +12,13 @@ from updater.models.status import StageEnum
 class TestReportService:
     """Test ReportService in isolation."""
 
+    @pytest.fixture(autouse=True)
+    def reset_singleton(self):
+        """每个测试前后重置单例，避免测试间互相污染。"""
+        ReportService._instance = None
+        yield
+        ReportService._instance = None
+
     @pytest.fixture
     def report_service(self):
         """Create ReportService instance."""
