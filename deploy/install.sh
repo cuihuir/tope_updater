@@ -25,6 +25,11 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Install system dependencies
+echo -e "${YELLOW}Installing system dependencies...${NC}"
+apt-get install -y libsdl2-ttf-2.0-0 libsdl2-image-2.0-0
+echo -e "${GREEN}✓ System dependencies installed${NC}"
+
 # Check Python version
 echo -e "${YELLOW}Checking Python version...${NC}"
 if ! command -v python3 &> /dev/null; then
