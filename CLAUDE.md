@@ -1,17 +1,17 @@
 # tope_updater Development Guidelines
 
-Last updated: 2026-02-26
+Last updated: 2026-02-28
 
 ## Project Overview
 
 TOP.E OTA Updater — 用于嵌入式 3D 打印机设备的 OTA 更新服务。
 
-**Current Branch**: `002-gui`
+**Current Branch**: `master`
 
 ## Tech Stack
 
 - Python 3.11+, FastAPI + uvicorn, httpx, aiofiles
-- Testing: pytest, pytest-asyncio, pytest-cov, pytest-mock
+- Testing: pytest, pytest-asyncio, pytest-cov, pytest-mock, pytest-html
 - Code Quality: ruff
 - GUI: pysdl2 (SDL2)
 
@@ -47,16 +47,24 @@ src/updater/
 
 tests/
 ├── conftest.py              # 全局 fixtures
-├── unit/                    # 单元测试
-├── integration/             # 集成测试
+├── unit/                    # 单元测试（214 个，91.47% 覆盖率）
+│   ├── test_deploy.py
+│   ├── test_download.py
+│   ├── test_logging.py
+│   ├── test_main_lifespan.py
+│   ├── test_process.py
+│   ├── test_reporter.py
+│   ├── test_routes.py
+│   ├── test_state_manager.py
+│   └── test_version_manager.py
+├── integration/             # 集成测试（待完成）
 ├── e2e/                     # 端到端测试（tmp/e2e, logs/e2e, backups/e2e）
 ├── manual/                  # 手动测试脚本
-└── reports/                 # 测试报告
+└── reports/                 # 测试报告（htmlcov/，test-report.html）
 
 docs/
 ├── DEPLOYMENT.md            # 部署指南
-├── ROLLBACK.md              # 回滚指南
-└── testing/                 # 设备测试文档
+└── ROLLBACK.md              # 回滚指南
 
 deploy/                      # 部署脚本（symlink 设置、出厂版本创建等）
 ```
@@ -67,7 +75,7 @@ deploy/                      # 部署脚本（symlink 设置、出厂版本创�
 # 运行服务
 uv run src/updater/main.py
 
-# 测试
+# 测试（含覆盖率报告）
 uv run pytest
 uv run pytest tests/unit/ -v
 
@@ -99,6 +107,7 @@ POST /update   → installing → success/failed → (65s后) idle
 
 ### GUI
 - 安装触发时启动 SDL2 子进程（`GUILauncher`）
+- 三栏布局：左(Logo) / 中(信息+日志) / 右(操作区)
 - success/failed 后显示 60s 倒计时 + "完成安装"按钮，点击立即退出
 - `routes.py` 的 `finally` 无条件调用 `gui_launcher.stop()` 回收僵尸进程
 
@@ -115,6 +124,29 @@ backups/      # 部署备份
 backups/e2e/  # e2e 测试备份
 tmp/state.json  # 状态持久化
 ```
+
+## Test Coverage（当前状态）
+
+```
+214 个单元测试，全部通过，总覆盖率 91.47%
+
+routes.py          100%
+main.py            100%
+utils/logging.py   100%
+utils/verification 100%
+services/process   100%
+state_manager      95%
+version_manager    97%
+deploy.py          82%
+download.py        86%
+GUI（已排除）       —
+```
+
+### 测试配置关键点
+- `.coveragerc`：排除 `src/updater/gui/*`（SDL2 GUI 无法在无头环境运行）
+- `pytest.ini` 的 `markers` / `filterwarnings` / `log_cli` 必须在 `[pytest]` section 内
+- `StateManager._instance = None` 和 `ReportService._instance = None` 在测试前后重置
+- 异步测试使用 `asyncio_mode = auto`
 
 ## Code Style
 
@@ -136,9 +168,13 @@ tmp/state.json  # 状态持久化
 | factory 只读 | 防止误操作破坏最后防线 |
 | Reporter 防御性 | 回调失败不阻塞 OTA 主流程 |
 | GUI 子进程 | 与 FastAPI 主进程隔离，崩溃不影响升级 |
+| GUI 排除覆盖率 | SDL2 依赖显示器，无法在无头环境测试 |
 
 ## Git
 
-- 分支：`002-gui`（当前），`master`（主分支）
+- 分支：`master`（当前）
 - Commit 格式：`feat/fix/docs/test/refactor/chore: 描述`
 - 提交前向用户确认
+
+# currentDate
+Today's date is 2026-02-28.

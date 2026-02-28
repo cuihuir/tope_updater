@@ -1,134 +1,75 @@
-# TOPE Updater - OTA Update Service
+# TOPE Updater — OTA Update Service
 
-OTA (Over-The-Air) update service for embedded 3D printer devices. Provides HTTP API for triggering downloads, verifying packages, and deploying updates with atomic file operations and safe process control.
+用于嵌入式 3D 打印机设备的 OTA (Over-The-Air) 更新服务。提供 HTTP API，支持固件/软件的下载、验证和部署，具备版本快照回滚、SDL2 GUI 进度窗口和 systemd 集成。
 
-## Project Status (2026-01-28)
+## 项目状态（2026-02-28）
 
-**Current Phase**: Phase 1-2 Complete (Reporter + Version Snapshot), Production Readiness: ~90%
+**当前分支**: `master`
+**生产就绪度**: ~92%
 
-- ✅ **Core OTA Workflow**: Download → Verify → Deploy (implemented & tested)
-- ✅ **Download Validation**: 3-layer validation (HTTP/size/MD5)
-- ✅ **Version Snapshot Architecture**: Symlink-based version management ⭐ NEW
-- ✅ **Two-Level Rollback**: Automatic rollback (previous → factory) ⭐ NEW
-- ✅ **Service Management**: Full systemd integration (stop/start/status)
-- ✅ **Error Handling**: Comprehensive error detection and recovery
-- ✅ **State Management**: Persistent state with restart recovery
-- ✅ **Reporter Integration**: Progress reporting to device-api ⭐ NEW
-- ✅ **Testing Infrastructure**: Complete pytest setup with unit tests
-  - pytest configuration (pytest.ini, pyproject.toml)
-  - Global fixtures (conftest.py)
-  - Unit tests for download, state_manager, version_manager
-  - Mock servers (device-api, package server)
-  - Test fixtures and test data
-  - Manual test scripts (tests/manual/)
-  - Test reports (tests/reports/)
-- ✅ **Version Snapshot Tests**: All 10 tests passing ⭐ NEW
-- ⚠️ **断点续传**: Optional - currently restarts download after interruption
-- ⚠️ **Integration Tests**: Unit tests complete, integration tests pending
-- ⚠️ **Deployment Testing**: Manual tests complete, E2E tests pending
+| 功能模块 | 状态 |
+|----------|------|
+| 核心 OTA 流程（下载 → 验证 → 部署） | ✅ 完成 |
+| 三层下载验证（Content-Length / size / MD5） | ✅ 完成 |
+| 版本快照架构（符号链接原子切换） | ✅ 完成 |
+| 两级自动回滚（previous → factory） | ✅ 完成 |
+| systemd 服务管理（stop/start/status） | ✅ 完成 |
+| 持久化状态管理（state.json + 重启自愈） | ✅ 完成 |
+| Reporter 回调（device-api 进度上报） | ✅ 完成 |
+| SDL2 GUI 进度窗口（子进程隔离） | ✅ 完成 |
+| 单元测试覆盖率 91.47%（214 个测试） | ✅ 完成 |
+| E2E 测试 | ⏳ 待完成 |
 
-See [tasks.md](specs/001-updater-core/tasks.md) for detailed progress.
+## 快速开始
 
-## Features
-
-### Core Functionality
-- **HTTP API**: FastAPI-based async server on port 12315
-- **Download with Validation**: HTTP streaming with 3-layer validation (Content-Length, package_size, MD5)
-- **MD5 Verification**: Mandatory integrity checking with automatic file cleanup on mismatch
-- **Atomic Deployment**: Crash-safe file replacement using temp → verify → rename pattern
-- **Auto-Rollback**: Automatic backup creation and restoration on deployment failure
-
-### Service Management (New ✨)
-- **Full systemd Integration**: systemctl stop/start with status verification
-- **Service Status Monitoring**: Real-time service state checking (active/inactive/failed)
-- **Graceful Shutdown**: 10s timeout for service stop, automatic SIGKILL by systemd
-- **Dependency Ordering**: Uses systemd service dependencies for proper startup sequence
-
-### Reliability Features
-- **Self-Healing**: Automatic cleanup of interrupted operations on startup
-- **Error Reporting**: Structured error codes (DEPLOYMENT_FAILED, ROLLBACK_FAILED, etc.)
-- **State Persistence**: JSON-based state file with restart recovery
-- **Comprehensive Logging**: Rotating logs (10MB, 3 files) with ISO 8601 timestamps
-
-## Quick Start
-
-### Prerequisites
+### 环境要求
 
 - Python 3.11+
 - Linux with systemd
-- Root privileges (for process control and system file deployment)
+- SDL2（GUI 窗口）：`sudo apt install libsdl2-dev libsdl2-ttf-dev`
 
-### Installation
+### 安装
 
 ```bash
-# Clone repository
-git checkout 001-updater-core
-
-# Install package with all dependencies (creates venv automatically)
+# 安装依赖（uv 自动创建虚拟环境）
 uv sync
 
-# For development with additional tools
+# 开发环境（含测试工具）
 uv sync --extra dev
-
-# Activate virtual environment
-source .venv/bin/activate
 ```
 
-**Note**: Using `uv sync` installs the package in editable mode, enabling stable absolute imports like `from updater.services import download` throughout the codebase.
-
-### Running Locally
+### 运行服务
 
 ```bash
-# Method 1: Using uv (recommended)
 uv run src/updater/main.py
-
-# Method 2: Using activated venv
-source .venv/bin/activate
-python -m updater.main
-
-# Method 3: Direct python module
-python src/updater/main.py
 ```
 
-The service will start on `http://localhost:12315`.
+服务启动在 `http://localhost:12315`。
 
-**Stop service**:
+### API 使用示例
+
 ```bash
-# Find and kill process
-pkill -f 'updater/main.py'
-
-# Or with signal 9 (force kill)
-pkill -f -9 'updater/main.py'
-```
-
-### API Endpoints
-
-**POST /api/v1.0/download** - Trigger async package download
-```bash
+# 1. 触发下载
 curl -X POST http://localhost:12315/api/v1.0/download \
   -H "Content-Type: application/json" \
   -d '{
     "version": "1.2.3",
-    "package_url": "https://s3.example.com/update.zip",
+    "package_url": "http://your-server/update.zip",
     "package_name": "update.zip",
-    "package_size": 104857600,
-    "package_md5": "abc123def456..."
+    "package_size": 1048576,
+    "package_md5": "abc123..."
   }'
-```
 
-**POST /api/v1.0/update** - Trigger async installation
-```bash
+# 2. 查询进度
+curl http://localhost:12315/api/v1.0/progress
+
+# 3. 触发安装（下载完成后）
 curl -X POST http://localhost:12315/api/v1.0/update \
   -H "Content-Type: application/json" \
   -d '{"version": "1.2.3"}'
 ```
 
-**GET /api/v1.0/progress** - Query current status
-```bash
-curl http://localhost:12315/api/v1.0/progress
-```
-
-Response example:
+**进度响应示例：**
 ```json
 {
   "code": 200,
@@ -142,430 +83,144 @@ Response example:
 }
 ```
 
-## Architecture
+**阶段枚举：** `idle` → `downloading` → `verifying` → `toInstall` → `installing` → `success` / `failed`
 
-### Version Snapshot Architecture ⭐ NEW
+## 架构概览
 
-TOP.E OTA Updater 使用基于符号链接的版本快照架构，实现快速版本切换和可靠的回滚机制。
+### OTA 流程
 
-#### 目录结构
+```
+POST /download ──→ downloading ──→ verifying ──→ toInstall
+POST /update   ──→ installing  ──→ success / failed ──→ (65s) idle
+```
+
+### 版本快照目录结构
 
 ```
 /opt/tope/versions/
-├── v1.0.0/              # 版本快照目录
-│   ├── bin/
-│   ├── lib/
-│   └── services/
-├── v1.1.0/              # 新版本快照
-│   ├── bin/
-│   ├── lib/
-│   └── services/
-├── current -> v1.1.0/   # 当前运行版本（符号链接）
-├── previous -> v1.0.0/  # 上一个版本（符号链接）
-└── factory -> v1.0.0/   # 出厂版本（符号链接，只读）
+├── v1.0.0/          # 出厂版本（只读 0555/0444）
+├── v1.1.0/          # 历史版本
+├── v1.2.0/          # 当前版本
+├── current -> v1.2.0
+├── previous -> v1.1.0
+└── factory -> v1.0.0  # 最后防线，只读保护
 ```
 
-#### 版本切换流程
+符号链接使用 `temp + rename` 原子更新，切换延迟 < 1ms。
 
-1. **部署新版本**
-   ```
-   创建版本目录 → 部署文件 → 更新符号链接
-   /opt/tope/versions/v1.1.0/ (新建)
-   current: v1.0.0 → v1.1.0 (原子切换)
-   previous: (无) → v1.0.0 (保存旧版本)
-   ```
+### 两级自动回滚
 
-2. **符号链接原子更新**
-   ```python
-   # 使用 temp + rename 模式确保原子性
-   temp_link = ".current.tmp.12345"
-   temp_link.symlink_to("v1.1.0")
-   temp_link.replace("current")  # 原子操作
-   ```
-
-3. **服务启动配置**
-   ```ini
-   # /etc/systemd/system/device-api.service
-   [Service]
-   ExecStart=/usr/local/bin/device-api
-   WorkingDirectory=/opt/tope/services/device-api
-
-   # /usr/local/bin/device-api -> /opt/tope/versions/current/bin/device-api
-   # /opt/tope/services/device-api -> /opt/tope/versions/current/services/device-api
-   ```
-
-#### 两级回滚机制
-
-当部署失败时，系统自动执行两级回滚：
-
-**Level 1: 回滚到上一版本**
 ```
-部署失败 → 回滚到 previous → 验证服务健康
-current: v1.1.0 → v1.0.0
+部署失败 → Level 1: rollback to previous
+           Level 1 失败 → Level 2: rollback to factory
+                          两级均失败 → 记录错误，需人工介入
 ```
 
-**Level 2: 回滚到出厂版本**（如果 Level 1 失败）
-```
-Level 1 失败 → 回滚到 factory → 验证服务健康
-current: v1.0.0 → factory (v1.0.0)
-```
+### GUI 子进程
 
-**手动干预**（如果 Level 2 失败）
-```
-两级回滚都失败 → 记录错误 → 需要人工介入
-```
+安装触发时启动 SDL2 子进程（`GUILauncher`），与 FastAPI 主进程隔离。显示进度条、日志、倒计时及"完成安装"按钮（60s 后自动关闭）。
 
-#### 出厂版本管理
-
-出厂版本是系统的最后防线，具有以下特性：
-
-1. **创建出厂版本**
-   ```bash
-   # 使用部署脚本
-   sudo ./deploy/create_factory_version.sh
-
-   # 或手动创建
-   cd /opt/tope/versions
-   ln -sf v1.0.0 factory
-   chmod -R 0555 v1.0.0  # 设置只读
-   ```
-
-2. **只读保护**
-   - 目录权限：0555 (r-xr-xr-x)
-   - 文件权限：0444 (r--r--r--)
-   - 防止意外修改或删除
-
-3. **验证出厂版本**
-   ```bash
-   ./deploy/verify_setup.sh
-   ```
-
-#### 优势
-
-- ✅ **快速切换**: 符号链接切换 < 1ms
-- ✅ **原子操作**: 使用 rename() 确保原子性
-- ✅ **零停机**: 服务重启时间最小化
-- ✅ **可靠回滚**: 两级回滚机制
-- ✅ **空间高效**: 只保留必要版本
-- ✅ **易于管理**: 清晰的版本历史
-
-详细信息请参考：
-- [部署指南](docs/DEPLOYMENT.md)
-- [回滚指南](docs/ROLLBACK.md)
-- [符号链接配置](deploy/SYMLINK_SETUP.md)
-
-## Testing
-
-### Manual Testing Scripts
-
-Several test scripts are available for manual testing:
+## 测试
 
 ```bash
-# Test download with validation
-curl -X POST http://localhost:12315/api/v1.0/download \
-  -H "Content-Type: application/json" \
-  -d '{
-    "version": "1.0.68",
-    "package_url": "https://example.com/package.apk",
-    "package_name": "test.apk",
-    "package_size": 270186022,
-    "package_md5": "c2a4a1fbfd904d9b2c73f84a1876b26e"
-  }'
+# 运行所有单元测试（含覆盖率）
+uv run pytest tests/unit/ -v
 
-# Monitor progress
-curl http://localhost:12315/api/v1.0/progress
+# 运行全套测试
+uv run pytest
 
-# Check logs
-tail -f ./logs/updater.log
+# 代码检查
+uv run ruff check src/ tests/
 ```
 
-### Test Scripts (New ✨)
+**当前测试状态：**
+- 214 个单元测试，全部通过
+- 覆盖率：**91.47%**（目标 80%）
 
-```bash
-# Test systemd integration (requires sudo)
-sudo python test_systemd_refactor.py
+| 文件 | 覆盖率 |
+|------|--------|
+| `routes.py` | 100% |
+| `main.py` | 100% |
+| `utils/logging.py` | 100% |
+| `utils/verification.py` | 100% |
+| `services/process.py` | 100% |
+| `services/state_manager.py` | 95% |
+| `services/version_manager.py` | 97% |
+| `services/deploy.py` | 82% |
+| `services/download.py` | 86% |
+| GUI（已排除） | — |
 
-# Test rollback mechanism
-python test_rollback.py
-
-# Test deployment flow
-python test_deploy_flow.py
-
-# Test full deployment with services
-python test_full_deploy_flow.py
-```
-
-**Test Results**:
-- ✅ 270MB download in 2min 7sec
-- ✅ PACKAGE_SIZE_MISMATCH detection
-- ✅ MD5_MISMATCH detection and cleanup
-- ✅ Service restart recovery (FAILED state preserved)
-- ✅ Interrupted download cleanup (downloading → idle on restart)
-- ✅ Rollback on deployment failure (Phase 5)
-- ✅ systemd stop/start/status verification (Phase 6)
-
-### Automated Testing
-
-**Test Infrastructure**: Complete ✨
-
-```bash
-# Run all tests
-pytest
-
-# Run unit tests
-pytest tests/unit/ -v
-
-# Run integration tests (when ready)
-pytest tests/integration/ -v -m integration
-
-# Run with coverage report
-pytest --cov=src/updater --cov-report=html
-pytest --cov=src/updater --cov-report=term-missing
-
-# View coverage report
-open htmlcov/index.html  # macOS
-xdg-open htmlcov/index.html  # Linux
-```
-
-**Test Structure**:
-```
-tests/
-├── conftest.py                  # Global pytest fixtures
-├── unit/                        # Unit tests
-│   ├── test_download.py         # ✅ Complete (461 lines)
-│   └── test_state_manager.py    # ✅ Complete (160 lines)
-├── integration/                 # Integration tests (TODO)
-├── contract/                    # Contract tests (TODO)
-├── e2e/                        # End-to-end tests (TODO)
-├── fixtures/                    # Test data and generation
-│   ├── generate_test_packages.py
-│   ├── packages/               # Test ZIP files
-│   └── tests/mocks/            # Mock servers
-│       ├── device_api_server.py
-│       └── package_server.py
-├── manual/                     # Manual test scripts
-│   ├── test_deploy_flow.py
-│   ├── test_full_deploy_flow.py
-│   ├── test_rollback.py
-│   └── test_systemd_refactor.py
-└── reports/                    # Test documentation
-    ├── DEPLOYMENT_TEST_REPORT.md
-    ├── DOWNLOAD_TEST_SUMMARY.md
-    └── TESTING_SETUP_SUMMARY.md
-```
-
-**Test Results**:
-- ✅ Unit tests written for download and state_manager
-- ✅ pytest configuration complete
-- ✅ Mock servers implemented (device-api, package)
-- ✅ Test fixtures and data generation
-- ✅ Manual test scripts (all passing)
-
-**Note**: See [testing-guide.md](specs/001-updater-core/testing-guide.md) for complete testing documentation.
-
-## Deployment
-
-### systemd Service (TODO)
-
-Systemd service unit file and installation script are not yet created. For production deployment:
-
-```bash
-# TODO: Install service
-sudo deploy/install.sh
-
-# TODO: Start service
-sudo systemctl start tope-updater
-
-# TODO: Enable auto-start on boot
-sudo systemctl enable tope-updater
-
-# Check status
-sudo systemctl status tope-updater
-
-# View logs
-sudo journalctl -u tope-updater -f
-```
-
-**Current workaround**: Run manually with `nohup` for background execution:
-
-```bash
-nohup uv run src/updater/main.py > /tmp/updater.log 2>&1 &
-
-# Check process
-ps aux | grep 'updater/main.py'
-
-# View logs
-tail -f /tmp/updater.log
-```
-
-## Project Structure
+## 项目结构
 
 ```
 src/updater/
-├── main.py                  # FastAPI app + uvicorn startup + lifespan manager
+├── main.py                  # FastAPI 入口 + lifespan（端口 12315）
 ├── api/
-│   ├── routes.py            # HTTP endpoints (download, update, progress)
-│   └── models.py            # Pydantic request/response models
+│   ├── routes.py            # /download /update /progress
+│   └── models.py            # Pydantic 请求/响应模型
 ├── services/
-│   ├── download.py          # Async download with httpx + 3-layer validation
-│   ├── deploy.py            # ZIP extraction, manifest parsing, atomic file ops + rollback ✨
-│   ├── process.py           # systemd service management (stop/start/status) ✨
-│   ├── reporter.py          # HTTP callbacks to device-api
-│   └── state_manager.py     # State persistence (state.json) + singleton
+│   ├── download.py          # 异步下载（三层验证）
+│   ├── deploy.py            # 版本快照部署（两级回滚）
+│   ├── process.py           # systemd 管理
+│   ├── reporter.py          # device-api 回调（单例）
+│   ├── state_manager.py     # 状态持久化（单例）
+│   └── version_manager.py   # 符号链接版本管理
 ├── models/
-│   ├── manifest.py          # Manifest data structure (ManifestModule)
-│   ├── state.py             # State file structure (StateFile with expiry)
-│   └── status.py            # Status enum (StageEnum)
+│   ├── manifest.py          # Manifest 数据模型
+│   ├── state.py             # StateFile 数据模型
+│   └── status.py            # StageEnum 枚举
+├── gui/
+│   ├── launcher.py          # GUI 子进程管理
+│   ├── progress_window.py   # SDL2 主窗口 + 事件循环
+│   ├── renderer.py          # 渲染（进度条/完成按钮/倒计时）
+│   ├── layout.py            # 自适应布局配置
+│   ├── assets/              # Logo PNG（多分辨率）
+│   └── fonts/               # NotoSansCJKsc 字体
 └── utils/
-    ├── logging.py           # Rotating logger (10MB, 3 files)
-    └── verification.py      # MD5 computation utilities
+    ├── logging.py           # 轮转日志（10MB × 3）
+    └── verification.py      # MD5 工具
 
-specs/001-updater-core/
-├── spec.md / spec_cn.md     # Feature specification (EN/CN)
-├── plan.md / plan_cn.md     # Implementation plan (EN/CN)
-├── tasks.md                 # Task list & progress tracking ⭐
-├── testing-guide.md         # Testing infrastructure guide ✨ NEW
-├── data-model.md            # Data model documentation
-├── quickstart.md            # Quick start guide
-└── research.md              # Technical research
+tests/
+├── conftest.py
+├── unit/                    # 单元测试（214 个，91.47% 覆盖率）
+│   ├── test_deploy.py
+│   ├── test_download.py
+│   ├── test_logging.py
+│   ├── test_main_lifespan.py
+│   ├── test_process.py
+│   ├── test_reporter.py
+│   ├── test_routes.py
+│   ├── test_state_manager.py
+│   └── test_version_manager.py
+├── integration/             # 集成测试（待完成）
+├── e2e/                     # E2E 测试（待完成）
+└── manual/                  # 手动测试脚本
 
-tests/                       # ✅ Infrastructure Complete
-├── conftest.py              # Global pytest fixtures ✅
-├── unit/                    # Unit tests
-│   ├── test_download.py     # ✅ Complete (461 lines)
-│   └── test_state_manager.py # ✅ Complete (160 lines)
-├── integration/             # Integration tests (TODO)
-├── contract/                # Contract tests (TODO)
-├── e2e/                    # End-to-end tests (TODO)
-├── fixtures/                # Test data and generation
-│   ├── generate_test_packages.py ✅
-│   ├── packages/           # Test ZIP files ✅
-│   └── tests/mocks/        # Mock servers ✅
-│       ├── device_api_server.py ✅
-│       └── package_server.py ✅
-├── manual/                 # Manual test scripts
-│   ├── test_deploy_flow.py ✅
-│   ├── test_full_deploy_flow.py ✅
-│   ├── test_rollback.py ✅
-│   └── test_systemd_refactor.py ✅
-└── reports/                # Test documentation ✅
-    ├── DEPLOYMENT_TEST_REPORT.md ✅
-    ├── DOWNLOAD_TEST_SUMMARY.md ✅
-    └── TESTING_SETUP_SUMMARY.md ✅
+docs/
+├── DEPLOYMENT.md
+└── ROLLBACK.md
 
-Test Scripts (Root)
-├── test_systemd_refactor.py # systemd integration tests ✨ NEW
-├── test_rollback.py         # Rollback mechanism tests ✨ NEW
-├── test_deploy_flow.py      # Deployment flow tests
-└── test_full_deploy_flow.py # Full deployment tests
+deploy/                      # 部署脚本（symlink 设置、出厂版本等）
 ```
 
-## Configuration
+## 配置
 
-All configuration is hardcoded per design:
-- **Updater Port**: 12315
-- **device-api Port**: 9080
-- **Working Directory**: Current directory
-- **Temp Directory**: `./tmp/`
-- **Logs Directory**: `./logs/`
-- **Backups Directory**: `./backups/`
+所有配置均硬编码（嵌入式设备设计）：
 
-## Architecture
+| 参数 | 值 |
+|------|----|
+| 服务端口 | 12315 |
+| device-api 端口 | 9080 |
+| 下载临时目录 | `./tmp/` |
+| 日志目录 | `./logs/` |
+| 备份目录 | `./backups/` |
+| 版本快照根目录 | `/opt/tope/versions/` |
 
-- **Language**: Python 3.11+
-- **Framework**: FastAPI 0.115.0 + uvicorn 0.32.0
-- **HTTP Client**: httpx 0.27.0 (async with Range support)
-- **File I/O**: aiofiles 24.1.0 (non-blocking)
-- **Target Platform**: Linux embedded device (ARM/x86)
+## 已知限制
 
-## Development
-
-### Code Quality
-
-```bash
-# Format code
-ruff format src/ tests/
-
-# Lint code
-ruff check src/ tests/
-
-# Type checking
-mypy src/updater/
-```
-
-### Adding Dependencies
-
-```bash
-# Edit pyproject.toml to add dependency
-# Then regenerate requirements files:
-uv pip compile pyproject.toml -o requirements.txt
-uv pip compile pyproject.toml --extra dev -o dev-requirements.txt
-```
-
-## Documentation
-
-- [Feature Specification](specs/001-updater-core/spec.md)
-- [Implementation Plan](specs/001-updater-core/plan.md)
-- [Data Model](specs/001-updater-core/data-model.md)
-- [Task List & Progress](specs/001-updater-core/tasks.md) ⭐
-- [Quick Start Guide](specs/001-updater-core/quickstart.md)
-
-## Next Steps
-
-See [tasks.md](specs/001-updater-core/tasks.md) for detailed roadmap.
-
-**Immediate (Production Ready) - P0**:
-1. ✅ Phase 6: systemd service management (COMPLETED)
-2. ✅ Phase 5: Atomic deployment + rollback (COMPLETED)
-3. ⏳ End-to-end integration test with real update package
-4. ⏳ Performance validation (<100ms /progress, <50MB RAM)
-
-**Short-term (Quality Assurance) - P1**:
-1. ⏳ Phase 7: Startup self-healing enhancements
-2. ✅ Setup pytest and write unit tests for core services - **COMPLETE** ⭐
-3. ⏳ Create integration test suite for full OTA flow
-4. ⏳ Add contract tests for API endpoints
-
-**Medium-term (Enhancements) - P2**:
-1. ⏳ Phase 8: Complete status reporting and callbacks
-2. ⏳ Phase 10: Code polish (error handling, SIGTERM, path validation)
-3. ⏸️ Phase 4: Resumable downloads (OPTIONAL - low priority)
-
-## Known Limitations
-
-1. **断点续传 (Resumable Downloads)** - ✅ Acceptable per Constitution:
-   - HTTP Range header code exists but not active
-   - Service restart → cleans up and restarts from scratch
-   - Status: Optional enhancement (Constitution Principle VIII: SHOULD)
-
-2. **Automated Tests** - ✅ Infrastructure Complete:
-   - ✅ pytest configuration (pytest.ini, pyproject.toml)
-   - ✅ Global fixtures and test utilities
-   - ✅ Unit tests for download and state_manager services
-   - ✅ Mock servers (device-api, package)
-   - ✅ Test fixtures and data generation
-   - ⏳ Integration tests (pending)
-   - ⏳ Contract tests (pending)
-   - ⏳ E2E tests (pending)
-
-3. **Deployment Testing** - ⚠️ Partial:
-   - Manual tests complete (download, deploy, rollback)
-   - Need real device integration test
-   - Need E2E test with production-like environment
-
-4. **systemd Service File** - ⚠️ Deferred:
-   - Unit file exists but not tested in production
-   - Install script exists but not validated
-   - TODO: Deploy to target device for production testing
-
-## Contributing
-
-Follow existing code patterns:
-- Use `from updater.services import X` (absolute imports)
-- All services should be async where possible
-- Update state via StateManager singleton
-- Follow Pydantic models for validation
-- Add docstrings to all public methods
+- **断点续传**：服务重启后重新下载（不自动续传），属于可选功能
+- **E2E 测试**：单元测试完整，集成/E2E 测试待完成
+- **systemd 服务文件**：`deploy/install.sh` 存在但需在目标设备验证
 
 ## License
 
