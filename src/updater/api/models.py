@@ -1,7 +1,7 @@
 """Pydantic models for HTTP API requests and responses."""
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from updater.models.status import StageEnum
 
@@ -50,6 +50,18 @@ class DownloadRequest(BaseModel):
         description="Expected MD5 hash (32-char hex)",
         examples=["600aff0f78265dd25bb6907828f916dd", "d41d8cd98f00b204e9800998ecf8427e"]
     )
+
+    @field_validator("package_name")
+    @classmethod
+    def validate_package_name(cls, value: str) -> str:
+        """Require a plain local ZIP filename under ./tmp."""
+        if "/" in value or "\\" in value or ".." in value:
+            raise ValueError("package_name must be a plain filename")
+        if not value.endswith(".zip"):
+            raise ValueError("package_name must end with .zip")
+        if not value.removesuffix(".zip"):
+            raise ValueError("package_name must include a basename")
+        return value
 
 
 class UpdateRequest(BaseModel):

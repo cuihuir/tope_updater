@@ -21,9 +21,9 @@ Rollback workflow:
 
 import asyncio
 import json
+import os
 import shutil
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import logging
@@ -102,6 +102,8 @@ class DeployService:
         # Track version directory for cleanup on failure
         version_dir = None
         manifest = None
+        promoted = False
+        external_backups: dict[Path, Optional[Path]] = {}
 
         try:
             # Step 1: Create version snapshot directory
@@ -170,35 +172,13 @@ class DeployService:
 
                 # Deploy to version directory (not to final destination)
                 await self._deploy_module_to_version(
-                    package_path, module, version_dir
+                    package_path, module, version_dir, external_backups
                 )
 
                 # Run post-deployment commands (e.g. daemon-reload, sysctl -p)
                 await self._run_post_cmds(module)
 
-            # Step 5: Start services
-            # Note: Services will read from version directory via symlinks
-            if modules_with_services:
-                self.logger.info(
-                    f"Starting {len(modules_with_services)} services after deployment"
-                )
-                self.state_manager.update_status(
-                    stage=StageEnum.INSTALLING,
-                    progress=85,
-                    message="Starting services...",
-                )
-
-                # Report to device-api
-                if self.reporter:
-                    await self.reporter.report_progress(
-                        stage=StageEnum.INSTALLING,
-                        progress=85,
-                        message="Starting services...",
-                    )
-
-                await self._start_services(modules_with_services)
-
-            # Step 6: Verify deployment
+            # Step 5: Verify deployment
             self.state_manager.update_status(
                 stage=StageEnum.INSTALLING,
                 progress=95,
@@ -218,9 +198,31 @@ class DeployService:
             # Step 7: Promote version (atomically update symlinks)
             self.logger.info(f"Promoting version {version} to current")
             self.version_manager.promote_version(version)
+            promoted = True
             self.logger.info(f"✓ Version {version} is now current")
 
-            # Step 8: Report success
+            # Step 8: Start services after current points at the new version
+            if modules_with_services:
+                self.logger.info(
+                    f"Starting {len(modules_with_services)} services after deployment"
+                )
+                self.state_manager.update_status(
+                    stage=StageEnum.INSTALLING,
+                    progress=98,
+                    message="Starting services...",
+                )
+
+                # Report to device-api
+                if self.reporter:
+                    await self.reporter.report_progress(
+                        stage=StageEnum.INSTALLING,
+                        progress=98,
+                        message="Starting services...",
+                    )
+
+                await self._start_services(modules_with_services)
+
+            # Step 9: Report success
             self.logger.info(f"Deployment complete for version {version}")
             self.state_manager.update_status(
                 stage=StageEnum.SUCCESS,
@@ -235,13 +237,16 @@ class DeployService:
                     progress=100,
                     message=f"Successfully installed version {version}",
                 )
+            self._discard_external_backups(external_backups)
 
         except Exception as e:
             # Deployment failed - perform two-level rollback
             self.logger.error(f"Deployment failed: {e}")
+            self._restore_external_backups(external_backups)
 
-            # Cleanup version directory on failure
-            if version_dir and version_dir.exists():
+            # Cleanup version directory on failure. If the version was already
+            # promoted, rollback first so current never points at a removed tree.
+            if version_dir and version_dir.exists() and not promoted:
                 self.logger.warning(f"Cleaning up failed version directory: {version_dir}")
                 try:
                     shutil.rmtree(version_dir)
@@ -263,6 +268,11 @@ class DeployService:
             if manifest is not None:
                 try:
                     await self.perform_two_level_rollback(manifest, e)
+                    if version_dir and version_dir.exists() and promoted:
+                        self.logger.warning(
+                            f"Cleaning up rolled-back version directory: {version_dir}"
+                        )
+                        shutil.rmtree(version_dir)
                 except Exception as rollback_error:
                     # Both rollback levels failed
                     self.logger.error(f"Two-level rollback failed: {rollback_error}")
@@ -312,7 +322,8 @@ class DeployService:
         self,
         package_path: Path,
         module,
-        version_dir: Path
+        version_dir: Path,
+        external_backups: Optional[dict[Path, Optional[Path]]] = None,
     ) -> None:
         """Deploy a single module to version snapshot directory.
 
@@ -385,7 +396,20 @@ class DeployService:
                     # shutil.copy preserves permission bits
                     if not str(dst_path_absolute).startswith("/opt/tope"):
                         dst_path_absolute.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy(final_dst, dst_path_absolute)
+                        if external_backups is not None:
+                            self._backup_external_destination(
+                                dst_path_absolute, external_backups
+                            )
+                        actual_tmp = (
+                            dst_path_absolute.parent
+                            / f".{dst_path_absolute.name}.tmp.{os.getpid()}"
+                        )
+                        try:
+                            shutil.copy2(final_dst, actual_tmp)
+                            actual_tmp.replace(dst_path_absolute)
+                        except Exception:
+                            actual_tmp.unlink(missing_ok=True)
+                            raise
                         self.logger.info(f"✓ Synced {module.name} to actual dst: {dst_path_absolute}")
 
                 except Exception as e:
@@ -397,6 +421,66 @@ class DeployService:
         except Exception as e:
             self.logger.error(f"Failed to deploy {module.name}: {e}")
             raise
+
+    def _backup_external_destination(
+        self,
+        dst_path: Path,
+        external_backups: dict[Path, Optional[Path]],
+    ) -> None:
+        """Record the pre-update state for a non-versioned destination."""
+        if dst_path in external_backups:
+            return
+
+        if not dst_path.exists():
+            external_backups[dst_path] = None
+            return
+
+        backup_path = (
+            dst_path.parent
+            / f".{dst_path.name}.ota-backup.{os.getpid()}.{len(external_backups)}"
+        )
+        shutil.copy2(dst_path, backup_path)
+        external_backups[dst_path] = backup_path
+        self.logger.info(f"Backed up external destination: {dst_path}")
+
+    def _restore_external_backups(
+        self,
+        external_backups: dict[Path, Optional[Path]],
+    ) -> None:
+        """Best-effort restore for external files changed before a failed deploy."""
+        for dst_path, backup_path in reversed(list(external_backups.items())):
+            try:
+                if backup_path is None:
+                    dst_path.unlink(missing_ok=True)
+                    self.logger.info(f"Removed new external destination: {dst_path}")
+                    continue
+
+                restore_tmp = (
+                    dst_path.parent
+                    / f".{dst_path.name}.restore.{os.getpid()}"
+                )
+                try:
+                    shutil.copy2(backup_path, restore_tmp)
+                    restore_tmp.replace(dst_path)
+                finally:
+                    restore_tmp.unlink(missing_ok=True)
+                    backup_path.unlink(missing_ok=True)
+                self.logger.info(f"Restored external destination: {dst_path}")
+            except Exception as restore_error:
+                self.logger.error(
+                    f"Failed to restore external destination {dst_path}: {restore_error}"
+                )
+        external_backups.clear()
+
+    def _discard_external_backups(
+        self,
+        external_backups: dict[Path, Optional[Path]],
+    ) -> None:
+        """Remove external backups after a successful deployment."""
+        for backup_path in external_backups.values():
+            if backup_path is not None:
+                backup_path.unlink(missing_ok=True)
+        external_backups.clear()
 
     async def _run_post_cmds(self, module) -> None:
         """Run post-deployment shell commands for a module.
@@ -486,10 +570,7 @@ class DeployService:
             Services are stopped before deployment to ensure files can be updated.
             systemd will handle dependency ordering automatically.
         """
-        # Collect unique service names
-        service_names = list(set(
-            m.process_name for m in modules_with_services if m.process_name
-        ))
+        service_names = self._ordered_unique_service_names(modules_with_services)
 
         self.logger.info(f"Stopping {len(service_names)} unique services")
 
@@ -516,10 +597,7 @@ class DeployService:
             systemd will automatically handle dependency ordering via
             After= and Requires= directives in service unit files.
         """
-        # Collect unique service names
-        service_names = list(set(
-            m.process_name for m in modules_with_services if m.process_name
-        ))
+        service_names = self._ordered_unique_service_names(modules_with_services)
 
         self.logger.info(f"Starting {len(service_names)} unique services")
 
@@ -537,10 +615,32 @@ class DeployService:
                 self.logger.info(f"✓ Started {service_name}")
 
             except Exception as e:
-                # If start fails, log but continue with other services
                 self.logger.error(f"Failed to start {service_name}: {e}")
-                # Don't raise - allow deployment to succeed
-                # Services can be manually started later if needed
+                raise RuntimeError(
+                    f"SERVICE_START_FAILED: Cannot complete deployment because "
+                    f"{service_name} failed to start. Error: {e}"
+                ) from e
+
+    def _ordered_unique_service_names(self, modules_with_services: list) -> list[str]:
+        """Return unique service names ordered by restart_order and declaration order."""
+        service_order: dict[str, tuple[int, int]] = {}
+
+        for index, module in enumerate(modules_with_services):
+            service_name = getattr(module, "process_name", None)
+            if not service_name:
+                continue
+            restart_order = getattr(module, "restart_order", None)
+            order = restart_order if isinstance(restart_order, int) else 1000
+            existing = service_order.get(service_name)
+            if existing is None or (order, index) < existing:
+                service_order[service_name] = (order, index)
+
+        return [
+            service_name
+            for service_name, _ in sorted(
+                service_order.items(), key=lambda item: item[1]
+            )
+        ]
 
     async def _verify_deployment(
         self,
@@ -781,7 +881,7 @@ class DeployService:
                 # Wait for service to be active
                 await self.process_manager.wait_for_service_status(
                     service_name,
-                    target_status="active",
+                    target_status=ServiceStatus.ACTIVE,
                     timeout=timeout
                 )
 
@@ -866,4 +966,3 @@ class DeployService:
                     f"ROLLBACK_LEVEL_2_FAILED: {level2_error}\n"
                     f"Manual intervention required!"
                 ) from level2_error
-

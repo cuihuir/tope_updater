@@ -66,13 +66,13 @@ class ReportService:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
                 response = await client.post(
                     self.report_endpoint,
                     json=payload.model_dump(mode="json"),
                 )
                 response.raise_for_status()
-                self.logger.debug(f"Report sent successfully")
+                self.logger.debug("Report sent successfully")
 
         except httpx.HTTPError as e:
             self.logger.warning(

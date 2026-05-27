@@ -241,8 +241,8 @@ class TestReportService:
                 message="Test"
             )
 
-            # Assert - verify timeout was set to 5.0 seconds
-            mock_client_class.assert_called_once_with(timeout=5.0)
+            # Assert - verify timeout was set and environment proxies are ignored
+            mock_client_class.assert_called_once_with(timeout=5.0, trust_env=False)
 
     @pytest.mark.asyncio
     async def test_report_progress_boundary_values(self, report_service):

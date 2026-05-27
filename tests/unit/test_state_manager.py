@@ -1,8 +1,6 @@
 """Unit tests for StateManager."""
 
-import json
 import pytest
-from pathlib import Path
 
 from updater.services.state_manager import StateManager
 from updater.models.status import StageEnum
@@ -143,6 +141,28 @@ class TestStateManager:
         
         # Verify deleted
         assert not manager.state_file_path.exists()
+        assert manager.get_persistent_state() is None
+
+    def test_delete_state_clears_memory_when_file_already_missing(self, tmp_path):
+        """delete_state 应清理内存状态，即使 state.json 已经不存在。"""
+        from updater.models.state import StateFile
+
+        manager = StateManager()
+        manager.state_file_path = tmp_path / "state.json"
+        test_state = StateFile(
+            version="1.0.0",
+            stage=StageEnum.TO_INSTALL,
+            bytes_downloaded=2048,
+            package_url="http://example.com/package.zip",
+            package_name="package.zip",
+            package_size=2048,
+            package_md5="098f6bcd4621d373cade4e832627b4f6",
+        )
+        manager.save_state(test_state)
+        manager.state_file_path.unlink()
+
+        manager.delete_state()
+
         assert manager.get_persistent_state() is None
 
     def test_load_corrupted_state(self, tmp_path):

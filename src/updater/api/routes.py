@@ -18,6 +18,7 @@ from updater.services.download import DownloadService
 from updater.services.deploy import DeployService
 from updater.services.reporter import ReportService
 from updater.gui.launcher import GUILauncher
+from updater.utils.verification import verify_md5_or_raise
 
 import logging
 
@@ -392,6 +393,8 @@ async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
         package_path = Path("./tmp") / persistent_state.package_name
         if not package_path.exists():
             raise FileNotFoundError(f"Package not found: {package_path}")
+
+        verify_md5_or_raise(package_path, persistent_state.package_md5)
 
         # Deploy package
         await deploy_service.deploy_package(package_path, version)

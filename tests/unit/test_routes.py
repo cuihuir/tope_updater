@@ -1,9 +1,7 @@
 """Integration tests for API routes (routes.py + main.py)."""
 
-import asyncio
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
-from pathlib import Path
 from fastapi.testclient import TestClient
 
 from updater.models.status import StageEnum
@@ -221,6 +219,22 @@ class TestPostDownload:
         assert resp.json()["code"] == 200
 
 
+    def test_rejects_package_name_with_path_separator(self, client):
+        """package_name 只能是普通 zip 文件名，不能逃出 tmp 目录。"""
+        payload = {**self._valid_payload, "package_name": "../pkg.zip"}
+
+        resp = client.post("/api/v1.0/download", json=payload)
+
+        assert resp.status_code == 422
+
+    def test_rejects_non_zip_package_name(self, client):
+        """package_name 必须是 zip 包，避免误传任意路径或文件类型。"""
+        payload = {**self._valid_payload, "package_name": "pkg.tar.gz"}
+
+        resp = client.post("/api/v1.0/download", json=payload)
+
+        assert resp.status_code == 422
+
 # -----------------------------------------------------------------------
 # POST /api/v1.0/update
 # -----------------------------------------------------------------------
@@ -367,7 +381,7 @@ class TestDownloadWorkflow:
         """_download_workflow 成功路径：调用 download_service.download_package。"""
         from updater.api.routes import _download_workflow
 
-        with patch("updater.api.routes.ReportService") as MockRS:
+        with patch("updater.api.routes.ReportService"):
             with patch("updater.api.routes.DownloadService") as MockDS:
                 mock_ds = MagicMock()
                 mock_ds.download_package = AsyncMock(return_value=None)
@@ -488,26 +502,28 @@ class TestUpdateWorkflow:
             with patch("updater.api.routes.ReportService"):
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.Path") as MockPath:
-                        mock_sm = MagicMock()
-                        persistent = MagicMock()
-                        persistent.package_name = "pkg.zip"
-                        mock_sm.get_persistent_state.return_value = persistent
-                        MockSM.return_value = mock_sm
+                        with patch("updater.api.routes.verify_md5_or_raise"):
+                            mock_sm = MagicMock()
+                            persistent = MagicMock()
+                            persistent.package_name = "pkg.zip"
+                            persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                            mock_sm.get_persistent_state.return_value = persistent
+                            MockSM.return_value = mock_sm
 
-                        # 模拟文件存在
-                        mock_path_instance = MagicMock()
-                        mock_path_instance.exists.return_value = True
-                        MockPath.return_value.__truediv__ = MagicMock(
-                            return_value=mock_path_instance
-                        )
+                            # 模拟文件存在
+                            mock_path_instance = MagicMock()
+                            mock_path_instance.exists.return_value = True
+                            MockPath.return_value.__truediv__ = MagicMock(
+                                return_value=mock_path_instance
+                            )
 
-                        mock_ds = MagicMock()
-                        mock_ds.deploy_package = AsyncMock(
-                            side_effect=RuntimeError("deploy failed")
-                        )
-                        MockDS.return_value = mock_ds
+                            mock_ds = MagicMock()
+                            mock_ds.deploy_package = AsyncMock(
+                                side_effect=RuntimeError("deploy failed")
+                            )
+                            MockDS.return_value = mock_ds
 
-                        await _update_workflow("1.0.0", mock_gui)
+                            await _update_workflow("1.0.0", mock_gui)
 
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
@@ -529,25 +545,65 @@ class TestUpdateWorkflow:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.Path") as MockPath:
                         with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                            mock_sm = MagicMock()
-                            persistent = MagicMock()
-                            persistent.package_name = "pkg.zip"
-                            mock_sm.get_persistent_state.return_value = persistent
-                            MockSM.return_value = mock_sm
+                            with patch("updater.api.routes.verify_md5_or_raise"):
+                                mock_sm = MagicMock()
+                                persistent = MagicMock()
+                                persistent.package_name = "pkg.zip"
+                                persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                                mock_sm.get_persistent_state.return_value = persistent
+                                MockSM.return_value = mock_sm
 
-                            mock_path_instance = MagicMock()
-                            mock_path_instance.exists.return_value = True
-                            MockPath.return_value.__truediv__ = MagicMock(
-                                return_value=mock_path_instance
-                            )
+                                mock_path_instance = MagicMock()
+                                mock_path_instance.exists.return_value = True
+                                MockPath.return_value.__truediv__ = MagicMock(
+                                    return_value=mock_path_instance
+                                )
 
-                            mock_ds = MagicMock()
-                            mock_ds.deploy_package = AsyncMock(return_value=None)
-                            MockDS.return_value = mock_ds
+                                mock_ds = MagicMock()
+                                mock_ds.deploy_package = AsyncMock(return_value=None)
+                                MockDS.return_value = mock_ds
 
-                            await _update_workflow("1.0.0", mock_gui)
+                                await _update_workflow("1.0.0", mock_gui)
 
         mock_sm.delete_state.assert_called_once()
         mock_sleep.assert_called_once_with(65)
         mock_sm.reset.assert_called_once()
         mock_gui.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_verifies_md5_before_deploy(self, tmp_path):
+        """_update_workflow 安装前应重新校验已下载包的 MD5。"""
+        from updater.api.routes import _update_workflow
+
+        mock_gui = MagicMock()
+
+        with patch("updater.api.routes.StateManager") as MockSM:
+            with patch("updater.api.routes.ReportService"):
+                with patch("updater.api.routes.DeployService") as MockDS:
+                    with patch("updater.api.routes.Path") as MockPath:
+                        with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock):
+                            with patch("updater.api.routes.verify_md5_or_raise", create=True) as mock_verify:
+                                mock_sm = MagicMock()
+                                persistent = MagicMock()
+                                persistent.package_name = "pkg.zip"
+                                persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                                mock_sm.get_persistent_state.return_value = persistent
+                                MockSM.return_value = mock_sm
+
+                                mock_path_instance = MagicMock()
+                                mock_path_instance.exists.return_value = True
+                                MockPath.return_value.__truediv__ = MagicMock(
+                                    return_value=mock_path_instance
+                                )
+
+                                mock_ds = MagicMock()
+                                mock_ds.deploy_package = AsyncMock(return_value=None)
+                                MockDS.return_value = mock_ds
+
+                                await _update_workflow("1.0.0", mock_gui)
+
+        mock_verify.assert_called_once_with(
+            mock_path_instance,
+            "d41d8cd98f00b204e9800998ecf8427e",
+        )
+        mock_ds.deploy_package.assert_called_once()

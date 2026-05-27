@@ -1,9 +1,9 @@
 """Download service with resumable HTTP downloads."""
 
-import asyncio
 from pathlib import Path
 from typing import Optional
 import logging
+from datetime import datetime
 
 import httpx
 import aiofiles
@@ -75,8 +75,8 @@ class DownloadService:
                     persistent_state.version != version or
                     persistent_state.package_md5 != package_md5):
                     self.logger.warning(
-                        f"Existing file is from different package "
-                        f"(URL/version/MD5 mismatch), deleting and starting fresh"
+                        "Existing file is from different package "
+                        "(URL/version/MD5 mismatch), deleting and starting fresh"
                     )
                     target_path.unlink()
                     self.state_manager.delete_state()
@@ -87,7 +87,7 @@ class DownloadService:
             else:
                 # No state file but file exists - orphaned file, delete it
                 self.logger.warning(
-                    f"Found orphaned file without state.json, deleting and starting fresh"
+                    "Found orphaned file without state.json, deleting and starting fresh"
                 )
                 target_path.unlink()
 
@@ -168,7 +168,7 @@ class DownloadService:
             raise
 
         # Verify MD5
-        self.logger.info(f"Download complete, verifying MD5...")
+        self.logger.info("Download complete, verifying MD5...")
         self.state_manager.update_status(
             stage=StageEnum.VERIFYING,
             progress=0,
@@ -190,7 +190,6 @@ class DownloadService:
             target_path.unlink(missing_ok=True)  # Delete corrupted file
 
             # Update state to FAILED and save to state.json
-            from datetime import datetime
             failed_state = StateFile(
                 version=version,
                 package_url=package_url,
@@ -221,7 +220,19 @@ class DownloadService:
             raise
 
         # MD5 verified successfully
-        self.logger.info(f"MD5 verification passed")
+        self.logger.info("MD5 verification passed")
+        verified_state = StateFile(
+            version=version,
+            package_url=package_url,
+            package_name=target_path.name,
+            package_size=package_size,
+            package_md5=package_md5,
+            bytes_downloaded=package_size,
+            last_update=datetime.now(),
+            stage=StageEnum.TO_INSTALL,
+            verified_at=datetime.now(),
+        )
+        self.state_manager.save_state(verified_state)
         self.state_manager.update_status(
             stage=StageEnum.TO_INSTALL,
             progress=100,
@@ -269,7 +280,7 @@ class DownloadService:
         if bytes_downloaded > 0:
             headers["Range"] = f"bytes={bytes_downloaded}-"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
 

@@ -3,8 +3,7 @@
 import hashlib
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch, mock_open, call
-import httpx
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from updater.services.download import DownloadService
 from updater.models.status import StageEnum
@@ -99,6 +98,40 @@ class TestDownloadService:
             final_call = mock_state_manager.update_status.call_args_list[-1]
             assert final_call[1]['stage'] == StageEnum.TO_INSTALL
             assert final_call[1]['progress'] == 100
+
+            saved_state = mock_state_manager.save_state.call_args_list[-1].args[0]
+            assert saved_state.stage == StageEnum.TO_INSTALL
+            assert saved_state.bytes_downloaded == package_size
+            assert saved_state.verified_at is not None
+
+    @pytest.mark.asyncio
+    async def test_download_http_client_ignores_environment_proxy(
+        self, download_service
+    ):
+        """下载应禁用环境代理，避免设备环境变量影响 OTA。"""
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = AsyncMock()
+            mock_response.headers = {"Content-Length": "0"}
+            mock_response.raise_for_status = MagicMock()
+            mock_response.aiter_bytes = lambda chunk_size: async_iterator([])
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+            mock_client.stream = MagicMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock()
+            mock_client_class.return_value = mock_client
+
+            await download_service._download_with_resume(
+                url="http://example.com/package.zip",
+                target_path=Path("./tmp/pkg.zip"),
+                package_size=0,
+                bytes_downloaded=0,
+                version="1.0.0",
+                package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            )
+
+        mock_client_class.assert_called_once_with(timeout=30.0, trust_env=False)
 
     @pytest.mark.asyncio
     async def test_download_package_md5_mismatch(self, download_service, mock_state_manager):
@@ -549,7 +582,6 @@ class TestDownloadService:
         # Arrange
         declared_size = 1000  # Server declares 1000 bytes
         actual_content = b"incomplete"  # But only sends 10 bytes
-        actual_size = len(actual_content)  # 10 bytes
         test_md5 = self.calculate_md5(actual_content)
 
         # Mock HTTP response - Content-Length says 1000, but only 10 bytes sent

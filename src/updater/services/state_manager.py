@@ -124,9 +124,9 @@ class StateManager:
 
     def delete_state(self) -> None:
         """Delete persistent state file (called after successful update or on errors)."""
+        self._persistent_state = None
         if self.state_file_path.exists():
             self.state_file_path.unlink()
-            self._persistent_state = None
             self.logger.info("Deleted state file")
 
     def get_persistent_state(self) -> Optional[StateFile]:

@@ -2,12 +2,12 @@
 
 import asyncio
 import pytest
-import json
 import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from updater.services.deploy import DeployService
+from updater.services.process import ServiceStatus
 from updater.models.manifest import Manifest, ManifestModule
 from updater.models.status import StageEnum
 
@@ -217,15 +217,29 @@ class TestDeployService:
         mock_process_manager.start_service.assert_any_call("service2.service")
 
     @pytest.mark.asyncio
-    async def test_start_services_failure_logs_but_continues(self, deploy_service, mock_process_manager):
-        """启动失败时只记录日志，不抛出异常。"""
+    async def test_start_services_failure_raises(self, deploy_service, mock_process_manager):
+        """启动关键服务失败时应抛出 RuntimeError。"""
         modules = [MagicMock(process_name="service1.service")]
         mock_process_manager.start_service.side_effect = RuntimeError("Start failed")
 
-        # 不应抛出异常
-        await deploy_service._start_services(modules)
+        with pytest.raises(RuntimeError, match="SERVICE_START_FAILED"):
+            await deploy_service._start_services(modules)
 
         mock_process_manager.start_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_services_respects_restart_order(self, deploy_service, mock_process_manager):
+        """服务启动应按 restart_order 从小到大执行并去重。"""
+        modules = [
+            MagicMock(process_name="service-a.service", restart_order=20),
+            MagicMock(process_name="service-b.service", restart_order=10),
+            MagicMock(process_name="service-a.service", restart_order=20),
+        ]
+
+        await deploy_service._start_services(modules)
+
+        calls = [c.args[0] for c in mock_process_manager.start_service.call_args_list]
+        assert calls == ["service-b.service", "service-a.service"]
 
     # --- rollback_to_previous ---
 
@@ -282,6 +296,21 @@ class TestDeployService:
         with pytest.raises(RuntimeError, match="ROLLBACK_LEVEL_2_FAILED"):
             await deploy_service.rollback_to_factory(sample_manifest)
 
+    @pytest.mark.asyncio
+    async def test_verify_services_healthy_uses_active_status_enum(
+        self, deploy_service, sample_manifest, mock_process_manager
+    ):
+        """健康检查应向 ProcessManager 传递 ServiceStatus.ACTIVE 枚举。"""
+        assert await deploy_service.verify_services_healthy(sample_manifest)
+
+        mock_process_manager.wait_for_service_status.assert_called_once()
+        assert (
+            mock_process_manager.wait_for_service_status.call_args.kwargs[
+                "target_status"
+            ]
+            == ServiceStatus.ACTIVE
+        )
+
     # --- _deploy_module_to_version ---
 
     @pytest.mark.asyncio
@@ -308,6 +337,72 @@ class TestDeployService:
         assert deployed.read_text() == "test content"
 
     @pytest.mark.asyncio
+    async def test_deploy_module_to_external_destination_uses_atomic_replace(
+        self, deploy_service, tmp_path
+    ):
+        """非 /opt/tope 目标应通过临时文件 + replace 原子替换真实路径。"""
+        package_path = tmp_path / "test.zip"
+        version_dir = tmp_path / "versions" / "v1.0.0"
+        version_dir.mkdir(parents=True)
+        real_dst = tmp_path / "printer_data" / "config" / "printer.cfg"
+        real_dst.parent.mkdir(parents=True)
+        real_dst.write_text("old config")
+
+        module = ManifestModule(
+            name="printer-cfg",
+            src="printer.cfg",
+            dst=str(real_dst),
+            process_name=None,
+        )
+
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("printer.cfg", "new config")
+
+        with patch("updater.services.deploy.shutil.copy", side_effect=AssertionError("copy is not atomic")):
+            await deploy_service._deploy_module_to_version(package_path, module, version_dir)
+
+        assert real_dst.read_text() == "new config"
+        assert not real_dst.with_suffix(real_dst.suffix + ".tmp").exists()
+
+    @pytest.mark.asyncio
+    async def test_deploy_package_restores_external_file_on_later_failure(
+        self, deploy_service, mock_version_manager, tmp_path
+    ):
+        """外部配置写入后若后续模块失败，应尽量恢复旧配置。"""
+        package_path = tmp_path / "test.zip"
+        version_dir = tmp_path / "versions" / "v1.0.0"
+        real_dst = tmp_path / "printer_data" / "config" / "printer.cfg"
+        real_dst.parent.mkdir(parents=True)
+        real_dst.write_text("old config")
+        mock_version_manager.create_version_dir.return_value = version_dir
+
+        manifest = Manifest(
+            version="1.0.0",
+            modules=[
+                ManifestModule(
+                    name="printer-cfg",
+                    src="printer.cfg",
+                    dst=str(real_dst),
+                    process_name=None,
+                ),
+                ManifestModule(
+                    name="missing-module",
+                    src="missing.bin",
+                    dst="/opt/tope/bin/missing.bin",
+                    process_name=None,
+                ),
+            ],
+        )
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", manifest.model_dump_json())
+            zf.writestr("printer.cfg", "new config")
+
+        with pytest.raises(RuntimeError, match="DEPLOYMENT_FAILED"):
+            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        assert real_dst.read_text() == "old config"
+
+    @pytest.mark.asyncio
     async def test_deploy_module_to_version_source_not_found(self, deploy_service, tmp_path):
         """ZIP 中不含源文件时应抛出 FileNotFoundError。"""
         package_path = tmp_path / "test.zip"
@@ -321,7 +416,7 @@ class TestDeployService:
             process_name=None,
         )
 
-        with zipfile.ZipFile(package_path, "w") as zf:
+        with zipfile.ZipFile(package_path, "w"):
             pass  # 空 ZIP
 
         with pytest.raises(FileNotFoundError, match="not found in package"):
@@ -496,6 +591,57 @@ class TestDeployService:
         final_call = mock_state_manager.update_status.call_args_list[-1]
         assert final_call[1]["stage"] == StageEnum.SUCCESS
         assert final_call[1]["progress"] == 100
+
+    @pytest.mark.asyncio
+    async def test_deploy_package_promotes_before_starting_services(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """服务应在 current symlink 切到新版本后再启动。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        events = []
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        def mark_sync(name):
+            events.append(name)
+
+        async def stop_side_effect(modules):
+            events.append("stop")
+
+        async def deploy_side_effect(*args):
+            events.append("deploy")
+
+        async def post_side_effect(module):
+            events.append("post")
+
+        async def verify_side_effect(*args):
+            events.append("verify")
+
+        async def start_side_effect(modules):
+            events.append("start")
+
+        mock_version_manager.promote_version.side_effect = lambda version: mark_sync("promote")
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock) as mock_deploy:
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock) as mock_post:
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock) as mock_verify:
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock) as mock_stop:
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock) as mock_start:
+                            mock_stop.side_effect = stop_side_effect
+                            mock_deploy.side_effect = deploy_side_effect
+                            mock_post.side_effect = post_side_effect
+                            mock_verify.side_effect = verify_side_effect
+                            mock_start.side_effect = start_side_effect
+
+                            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        assert events.index("verify") < events.index("promote") < events.index("start")
 
 
 @pytest.mark.unit
