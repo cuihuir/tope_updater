@@ -96,16 +96,58 @@ class TestProcessManager:
         mock_process.returncode = 0
 
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
-            with patch.object(process_manager, 'wait_for_service_status', new_callable=AsyncMock):
+            with patch.object(
+                process_manager,
+                'wait_for_service_stopped',
+                new_callable=AsyncMock,
+            ) as wait_stopped:
+                wait_stopped.return_value = ServiceStatus.INACTIVE
                 # Act
                 await process_manager.stop_service("test.service")
 
                 # Assert
-                process_manager.wait_for_service_status.assert_called_once_with(
+                wait_stopped.assert_called_once_with(
                     "test.service",
-                    target_status=ServiceStatus.INACTIVE,
                     timeout=ProcessManager.STOP_TIMEOUT,
                 )
+
+    @pytest.mark.asyncio
+    async def test_stop_service_accepts_failed_as_stopped(self, process_manager):
+        """Test stop_service accepts failed state after systemctl stop."""
+        # Arrange
+        mock_stop = AsyncMock()
+        mock_stop.communicate = AsyncMock(return_value=(b"", b""))
+        mock_stop.returncode = 0
+
+        mock_reset = AsyncMock()
+        mock_reset.communicate = AsyncMock(return_value=(b"", b""))
+        mock_reset.returncode = 0
+
+        processes = [mock_stop, mock_reset]
+
+        async def fake_exec(*args, **kwargs):
+            return processes.pop(0)
+
+        with patch('asyncio.create_subprocess_exec', side_effect=fake_exec) as exec_mock:
+            with patch.object(
+                process_manager,
+                'wait_for_service_stopped',
+                new_callable=AsyncMock,
+            ) as wait_stopped:
+                wait_stopped.return_value = ServiceStatus.FAILED
+
+                # Act
+                await process_manager.stop_service("printer-gui-eglfs.service")
+
+        wait_stopped.assert_called_once_with(
+            "printer-gui-eglfs.service",
+            timeout=ProcessManager.STOP_TIMEOUT,
+        )
+        assert exec_mock.call_args_list[1].args == (
+            "systemctl",
+            "reset-failed",
+            "printer-gui-eglfs.service",
+        )
 
     @pytest.mark.asyncio
     async def test_stop_service_command_failure(self, process_manager):
@@ -131,7 +173,7 @@ class TestProcessManager:
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
             with patch.object(
                 process_manager,
-                'wait_for_service_status',
+                'wait_for_service_stopped',
                 side_effect=asyncio.TimeoutError("Timeout")
             ):
                 # Act & Assert
@@ -278,6 +320,53 @@ class TestProcessManager:
                 )
 
     @pytest.mark.asyncio
+    async def test_wait_for_service_stopped_accepts_inactive(self, process_manager):
+        """Test wait_for_service_stopped accepts inactive as stopped."""
+        with patch.object(
+            process_manager,
+            'get_service_status',
+            return_value=ServiceStatus.INACTIVE
+        ):
+            status = await process_manager.wait_for_service_stopped(
+                "test.service",
+                timeout=1.0,
+                check_interval=0.01,
+            )
+
+        assert status == ServiceStatus.INACTIVE
+
+    @pytest.mark.asyncio
+    async def test_wait_for_service_stopped_accepts_failed(self, process_manager):
+        """Test wait_for_service_stopped accepts failed as stopped."""
+        with patch.object(
+            process_manager,
+            'get_service_status',
+            return_value=ServiceStatus.FAILED
+        ):
+            status = await process_manager.wait_for_service_stopped(
+                "test.service",
+                timeout=1.0,
+                check_interval=0.01,
+            )
+
+        assert status == ServiceStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_wait_for_service_stopped_timeout(self, process_manager):
+        """Test wait_for_service_stopped times out while still active."""
+        with patch.object(
+            process_manager,
+            'get_service_status',
+            return_value=ServiceStatus.ACTIVE
+        ):
+            with pytest.raises(asyncio.TimeoutError, match="did not stop"):
+                await process_manager.wait_for_service_stopped(
+                    "test.service",
+                    timeout=0.1,
+                    check_interval=0.01,
+                )
+
+    @pytest.mark.asyncio
     async def test_stop_service_custom_timeout(self, process_manager):
         """Test stop_service with custom timeout."""
         # Arrange
@@ -288,14 +377,18 @@ class TestProcessManager:
         custom_timeout = 20.0
 
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
-            with patch.object(process_manager, 'wait_for_service_status', new_callable=AsyncMock):
+            with patch.object(
+                process_manager,
+                'wait_for_service_stopped',
+                new_callable=AsyncMock,
+            ) as wait_stopped:
+                wait_stopped.return_value = ServiceStatus.INACTIVE
                 # Act
                 await process_manager.stop_service("test.service", timeout=custom_timeout)
 
                 # Assert
-                process_manager.wait_for_service_status.assert_called_once_with(
+                wait_stopped.assert_called_once_with(
                     "test.service",
-                    target_status=ServiceStatus.INACTIVE,
                     timeout=custom_timeout,
                 )
 
@@ -357,7 +450,7 @@ class TestProcessManager:
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
             with patch.object(
                 process_manager,
-                'wait_for_service_status',
+                'wait_for_service_stopped',
                 side_effect=RuntimeError("Unexpected error")
             ):
                 # Act & Assert

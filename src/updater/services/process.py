@@ -82,14 +82,20 @@ class ProcessManager:
                     f"failed with exit code {process.returncode}: {error_msg}"
                 )
 
-            # Wait for service to actually stop
-            await self.wait_for_service_status(
+            # Wait for service to actually stop. Some services report "failed"
+            # after systemctl stop even though their process has exited.
+            stopped_status = await self.wait_for_service_stopped(
                 service_name,
-                target_status=ServiceStatus.INACTIVE,
                 timeout=timeout,
             )
 
-            self.logger.info(f"Service {service_name} stopped successfully")
+            if stopped_status == ServiceStatus.FAILED:
+                await self.reset_failed(service_name)
+
+            self.logger.info(
+                f"Service {service_name} stopped successfully "
+                f"({stopped_status.value})"
+            )
 
         except asyncio.TimeoutError:
             self.logger.error(
@@ -206,6 +212,31 @@ class ProcessManager:
             self.logger.error(f"Failed to restart {service_name}: {e}")
             raise
 
+    async def reset_failed(self, service_name: str) -> None:
+        """Clear systemd failed state for a stopped service."""
+        command = ["systemctl", "reset-failed", service_name]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                self.logger.warning(
+                    f"systemctl reset-failed failed for {service_name}: "
+                    f"exit code {process.returncode}, "
+                    f"stderr: {stderr.decode().strip()}"
+                )
+                return
+
+            self.logger.info(f"Reset failed state for {service_name}")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to reset failed state for {service_name}: {e}")
+
     async def get_service_status(self, service_name: str) -> ServiceStatus:
         """Get current status of a systemd service.
 
@@ -295,4 +326,35 @@ class ProcessManager:
                 )
 
             # Wait before next check
+            await asyncio.sleep(check_interval)
+
+    async def wait_for_service_stopped(
+        self,
+        service_name: str,
+        timeout: float,
+        check_interval: float = STATUS_CHECK_INTERVAL,
+    ) -> ServiceStatus:
+        """Wait until a service is stopped enough for file deployment."""
+        self.logger.debug(
+            f"Waiting for {service_name} to stop (timeout={timeout}s)"
+        )
+
+        start_time = asyncio.get_event_loop().time()
+
+        while True:
+            current_status = await self.get_service_status(service_name)
+
+            if current_status in {ServiceStatus.INACTIVE, ServiceStatus.FAILED}:
+                self.logger.debug(
+                    f"Service {service_name} stopped with {current_status.value}"
+                )
+                return current_status
+
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                raise asyncio.TimeoutError(
+                    f"Service {service_name} did not stop within {timeout}s "
+                    f"(current: {current_status.value})"
+                )
+
             await asyncio.sleep(check_interval)
