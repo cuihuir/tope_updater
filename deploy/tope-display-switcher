@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PRINTER_GUI_SERVICE="${PRINTER_GUI_SERVICE:-printer-gui-eglfs.service}"
+UPDATER_GUI_SERVICE="${UPDATER_GUI_SERVICE:-tope-updater-gui.service}"
+LOCK_PATH="${TOPE_DISPLAY_SWITCHER_LOCK:-/run/tope-display-switcher.lock}"
+TIMEOUT="${TOPE_DISPLAY_SWITCHER_TIMEOUT:-10}"
+INTERVAL="${TOPE_DISPLAY_SWITCHER_INTERVAL:-0.2}"
+
+log() {
+  echo "[tope-display-switcher] $*"
+}
+
+err() {
+  echo "[tope-display-switcher] ERROR: $*" >&2
+}
+
+usage() {
+  cat >&2 <<EOF
+Usage:
+  tope-display-switcher show updater
+  tope-display-switcher show printer
+  tope-display-switcher blank
+  tope-display-switcher status
+EOF
+}
+
+is_active() {
+  systemctl is-active "$1" >/dev/null 2>&1
+}
+
+active_state() {
+  systemctl is-active "$1" 2>/dev/null || true
+}
+
+wait_stopped() {
+  local service="$1"
+  local elapsed="0"
+  local state
+
+  while true; do
+    state="$(active_state "$service")"
+    if [ "$state" = "inactive" ] || [ "$state" = "failed" ] || [ "$state" = "unknown" ]; then
+      return 0
+    fi
+
+    if awk "BEGIN { exit !($elapsed >= $TIMEOUT) }"; then
+      err "$service did not stop within ${TIMEOUT}s (state=$state)"
+      return 1
+    fi
+
+    sleep "$INTERVAL"
+    elapsed="$(awk "BEGIN { print $elapsed + $INTERVAL }")"
+  done
+}
+
+wait_active() {
+  local service="$1"
+  local elapsed="0"
+
+  while true; do
+    if is_active "$service"; then
+      return 0
+    fi
+
+    if awk "BEGIN { exit !($elapsed >= $TIMEOUT) }"; then
+      err "$service did not become active within ${TIMEOUT}s"
+      return 1
+    fi
+
+    sleep "$INTERVAL"
+    elapsed="$(awk "BEGIN { print $elapsed + $INTERVAL }")"
+  done
+}
+
+stop_and_reset() {
+  local service="$1"
+  log "stopping $service"
+  systemctl stop "$service"
+  wait_stopped "$service"
+  systemctl reset-failed "$service" || true
+}
+
+show_updater() {
+  stop_and_reset "$PRINTER_GUI_SERVICE"
+  log "starting $UPDATER_GUI_SERVICE"
+  systemctl start "$UPDATER_GUI_SERVICE"
+  wait_active "$UPDATER_GUI_SERVICE"
+}
+
+show_printer() {
+  stop_and_reset "$UPDATER_GUI_SERVICE"
+  log "starting $PRINTER_GUI_SERVICE"
+  systemctl start "$PRINTER_GUI_SERVICE"
+  wait_active "$PRINTER_GUI_SERVICE"
+}
+
+blank() {
+  stop_and_reset "$UPDATER_GUI_SERVICE"
+  stop_and_reset "$PRINTER_GUI_SERVICE"
+}
+
+status() {
+  local printer updater
+  printer="$(active_state "$PRINTER_GUI_SERVICE")"
+  updater="$(active_state "$UPDATER_GUI_SERVICE")"
+  log "$PRINTER_GUI_SERVICE=$printer"
+  log "$UPDATER_GUI_SERVICE=$updater"
+
+  if [ "$printer" = "active" ] && [ "$updater" = "active" ]; then
+    err "both display services are active"
+    return 1
+  fi
+}
+
+main() {
+  if [ "$#" -lt 1 ]; then
+    usage
+    return 2
+  fi
+
+  mkdir -p "$(dirname "$LOCK_PATH")"
+  exec 9>"$LOCK_PATH"
+  flock -n 9 || {
+    err "another display transition is running"
+    return 1
+  }
+
+  case "${1:-}" in
+    show)
+      case "${2:-}" in
+        updater) show_updater ;;
+        printer) show_printer ;;
+        *) usage; return 2 ;;
+      esac
+      ;;
+    blank)
+      blank
+      ;;
+    status)
+      status
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+}
+
+main "$@"
