@@ -77,14 +77,19 @@ echo -e "${YELLOW}Creating runtime directories...${NC}"
 mkdir -p "$INSTALL_DIR/tmp"
 mkdir -p "$INSTALL_DIR/logs"
 mkdir -p "$INSTALL_DIR/backups"
+mkdir -p "$INSTALL_DIR/deploy"
 chmod 0755 "$INSTALL_DIR/tmp"
 chmod 0755 "$INSTALL_DIR/logs"
 chmod 0755 "$INSTALL_DIR/backups"
+chmod 0755 "$INSTALL_DIR/deploy"
 echo -e "${GREEN}✓ Runtime directories created${NC}"
 
 # Install systemd service
 echo -e "${YELLOW}Installing systemd service...${NC}"
-cp "$SCRIPT_DIR/tope-updater.service" "$SERVICE_FILE"
+install -m 0644 "$SCRIPT_DIR/tope-updater.service" "$SERVICE_FILE"
+install -m 0755 "$PROJECT_ROOT/deploy/tope-display-switcher" /usr/local/bin/tope-display-switcher
+install -m 0644 "$PROJECT_ROOT/deploy/tope-updater-gui.service" /etc/systemd/system/tope-updater-gui.service
+install -m 0644 "$PROJECT_ROOT/deploy/updater-gui-eglfs-kms.json" "$INSTALL_DIR/deploy/updater-gui-eglfs-kms.json"
 systemctl daemon-reload
 echo -e "${GREEN}✓ Service installed${NC}"
 

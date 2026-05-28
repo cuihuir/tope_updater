@@ -1,0 +1,31 @@
+[Unit]
+Description=TOPE OTA Updater GUI (EGLFS)
+After=tope-updater.service dbus.socket
+Requires=tope-updater.service
+Conflicts=printer-gui-eglfs.service
+ConditionPathExists=/dev/dri/card0
+ConditionPathExists=/opt/tope/services/printer-gui-qml/.venv/bin/python
+
+[Service]
+Type=simple
+User=tope
+Group=tope
+WorkingDirectory=/opt/tope/updater
+Environment=HOME=/home/tope
+Environment=PYTHONPATH=/opt/tope/updater/src
+Environment=QT_QPA_PLATFORM=eglfs
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms
+Environment=QT_QPA_EGLFS_KMS_CONFIG=/opt/tope/updater/deploy/updater-gui-eglfs-kms.json
+Environment=QSG_RHI_BACKEND=opengl
+Environment=QT_QPA_EGLFS_HIDECURSOR=1
+Environment=TOPE_UPDATER_PROGRESS_URL=http://127.0.0.1:12315/api/v1.0/progress
+ExecStart=/opt/tope/services/printer-gui-qml/.venv/bin/python -m updater.qt_gui.main
+Restart=no
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tope-updater-gui
+SupplementaryGroups=video render
+
+[Install]
+WantedBy=multi-user.target

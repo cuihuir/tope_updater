@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/tope/updater
+Environment=PYTHONPATH=/opt/tope/updater/src
 ExecStart=/opt/tope/updater/.venv/bin/python -m updater.main
 Restart=always
 RestartSec=10
