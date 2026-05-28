@@ -1,0 +1,1 @@
+"""Qt updater GUI package."""
