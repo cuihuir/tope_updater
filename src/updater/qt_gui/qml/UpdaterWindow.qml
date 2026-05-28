@@ -8,7 +8,10 @@ Window {
     color: "#101418"
 
     Rectangle {
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: root.height
+        height: root.width
+        rotation: 90
         color: "#101418"
 
         Column {

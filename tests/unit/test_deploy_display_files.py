@@ -14,6 +14,17 @@ def test_updater_service_sets_pythonpath():
     assert "Environment=PYTHONPATH=/opt/tope/updater/src" in service
 
 
+def test_updater_service_sets_writable_display_switcher_lock():
+    service = (ROOT / "deploy" / "tope-updater.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Environment=TOPE_DISPLAY_SWITCHER_LOCK="
+        "/opt/tope/updater/tmp/display-switcher.lock"
+    ) in service
+
+
 def test_updater_gui_service_uses_printer_gui_python_runtime():
     service = (ROOT / "deploy" / "tope-updater-gui.service").read_text(
         encoding="utf-8"

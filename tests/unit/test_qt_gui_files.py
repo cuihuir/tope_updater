@@ -27,3 +27,12 @@ def test_qml_window_is_fullscreen_and_display_only():
     assert "progressModel.message" in source
     assert "Update Failed" in source
     assert "Update Complete" in source
+
+def test_qml_window_rotates_to_landscape_panel():
+    source = (
+        ROOT / "src" / "updater" / "qt_gui" / "qml" / "UpdaterWindow.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "width: root.height" in source
+    assert "height: root.width" in source
+    assert "rotation: 90" in source
