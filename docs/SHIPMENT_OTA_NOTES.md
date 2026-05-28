@@ -285,6 +285,17 @@ tope-display-switcher show printer
 tope-display-switcher blank
 ```
 
+设备上可直接使用以下命令验证显示切换：
+
+```bash
+sudo tope-display-switcher status
+sudo tope-display-switcher show updater
+sudo tope-display-switcher show printer
+sudo tope-display-switcher blank
+```
+
+beta 版本中，`tope-updater-gui.service` 的 GUI 代码随 `tope_updater` 发布，运行时复用现有 `printer-gui` 的 PySide6 Python 环境，并通过 `PYTHONPATH=/opt/tope/updater/src` import updater GUI 模块。
+
 关键要求：
 
 - `tope-updater-gui.service` 启动失败时必须回退到 `printer-gui`。
