@@ -17,7 +17,7 @@ from updater.services.state_manager import StateManager
 from updater.services.download import DownloadService
 from updater.services.deploy import DeployService
 from updater.services.reporter import ReportService
-from updater.gui.launcher import GUILauncher
+from updater.services.display import DisplaySwitchService
 from updater.utils.verification import verify_md5_or_raise
 
 import logging
@@ -339,15 +339,8 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
             },
         )
 
-    # Start GUI (NEW)
-    gui_launcher = GUILauncher()
-    gui_started = gui_launcher.start()
-
-    if not gui_started:
-        logger.warning("Failed to start GUI, continuing without visual feedback")
-
     # Start update in background
-    background_tasks.add_task(_update_workflow, request.version, gui_launcher)
+    background_tasks.add_task(_update_workflow, request.version)
 
     return JSONResponse(
         status_code=200,
@@ -378,11 +371,12 @@ async def _download_workflow(
         pass
 
 
-async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
+async def _update_workflow(version: str) -> None:
     """Background task for update workflow."""
     state_manager = StateManager()
     reporter = ReportService()
     deploy_service = DeployService(reporter=reporter)
+    display_service = DisplaySwitchService()
 
     try:
         # Get package path
@@ -395,6 +389,9 @@ async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
             raise FileNotFoundError(f"Package not found: {package_path}")
 
         verify_md5_or_raise(package_path, persistent_state.package_md5)
+
+        if not await display_service.show_updater():
+            logger.warning("Failed to switch display to updater GUI, continuing OTA")
 
         # Deploy package
         await deploy_service.deploy_package(package_path, version)
@@ -417,5 +414,5 @@ async def _update_workflow(version: str, gui_launcher: GUILauncher) -> None:
         )
 
     finally:
-        # Stop GUI - always call stop() to reap zombie process even if GUI already exited
-        gui_launcher.stop()
+        if not await display_service.show_printer():
+            logger.error("Failed to switch display back to printer GUI")
