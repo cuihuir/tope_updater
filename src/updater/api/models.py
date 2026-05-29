@@ -23,9 +23,9 @@ class DownloadRequest(BaseModel):
 
     version: str = Field(
         ...,
-        pattern=r"^\d+\.\d+\.\d+$",
-        description="Semantic version (e.g., 1.0.0)",
-        examples=["1.0.0", "2.1.3"]
+        pattern=r"^v\d+\.\d+\.\d+$",
+        description="Semantic version (e.g., v1.0.0)",
+        examples=["v1.0.0", "v2.1.3"]
     )
     package_url: str = Field(
         ...,
