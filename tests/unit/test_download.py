@@ -105,6 +105,32 @@ class TestDownloadService:
             assert saved_state.verified_at is not None
 
     @pytest.mark.asyncio
+    async def test_download_reports_target_version(
+        self, download_service, mock_state_manager
+    ):
+        """All download reports should include the OTA target version."""
+        reporter = MagicMock()
+        reporter.report_progress = AsyncMock()
+        download_service.reporter = reporter
+
+        with patch.object(
+            download_service, "_download_with_resume", new_callable=AsyncMock
+        ), patch("updater.services.download.verify_md5_or_raise"), patch.object(
+            Path, "exists", return_value=False
+        ):
+            await download_service.download_package(
+                version="1.2.3",
+                package_url="http://example.com/package.zip",
+                package_name="test-package.zip",
+                package_size=123,
+                package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            )
+
+        assert reporter.report_progress.await_count >= 1
+        for call in reporter.report_progress.await_args_list:
+            assert call.kwargs["version"] == "1.2.3"
+
+    @pytest.mark.asyncio
     async def test_download_http_client_ignores_environment_proxy(
         self, download_service
     ):

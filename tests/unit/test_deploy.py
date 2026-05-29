@@ -593,6 +593,35 @@ class TestDeployService:
         assert final_call[1]["progress"] == 100
 
     @pytest.mark.asyncio
+    async def test_deploy_package_reports_target_version(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """deploy_package 上报 device-api 时应携带本次目标版本。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        reporter = MagicMock()
+        reporter.report_progress = AsyncMock()
+        deploy_service.reporter = reporter
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock):
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock):
+                            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        assert reporter.report_progress.await_count >= 1
+        for call in reporter.report_progress.await_args_list:
+            assert call.kwargs["version"] == "1.0.0"
+
+    @pytest.mark.asyncio
     async def test_deploy_package_promotes_before_starting_services(
         self, deploy_service, sample_manifest, tmp_path, mock_version_manager
     ):

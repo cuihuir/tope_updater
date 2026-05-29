@@ -152,3 +152,6 @@ class ReportPayload(BaseModel):
     error: Optional[str] = Field(
         None, description="Error code and message if stage == failed"
     )
+    version: Optional[str] = Field(
+        None, description="OTA target version with v prefix, e.g. v0.1.7"
+    )

@@ -406,11 +406,19 @@ async def _update_workflow(version: str) -> None:
         state_manager.reset()
 
     except Exception as e:
+        error = f"UPDATE_FAILED: {str(e)}"
         state_manager.update_status(
             stage=StageEnum.FAILED,
             progress=0,
             message="Update failed",
-            error=f"UPDATE_FAILED: {str(e)}",
+            error=error,
+        )
+        await reporter.report_progress(
+            stage=StageEnum.FAILED,
+            progress=0,
+            message="Update failed",
+            error=error,
+            version=version,
         )
 
     finally:

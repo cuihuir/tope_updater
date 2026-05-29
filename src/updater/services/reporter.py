@@ -9,6 +9,16 @@ from updater.api.models import ReportPayload
 from updater.models.status import StageEnum
 
 
+def _format_report_version(version: Optional[str]) -> Optional[str]:
+    """Return the device-api report version with the required v prefix."""
+    if version is None:
+        return None
+    version = version.strip()
+    if not version:
+        return None
+    return version if version.startswith("v") else f"v{version}"
+
+
 class ReportService:
     """Singleton service for progress reporting to device-api."""
 
@@ -42,6 +52,7 @@ class ReportService:
         progress: int,
         message: str,
         error: Optional[str] = None,
+        version: Optional[str] = None,
     ) -> None:
         """Send progress report to device-api.
 
@@ -50,6 +61,7 @@ class ReportService:
             progress: Percentage completion (0-100)
             message: Human-readable status description
             error: Error message if stage == failed
+            version: OTA target version; reported with v prefix
 
         Note:
             Failures are logged but not raised to avoid blocking OTA operations
@@ -59,6 +71,7 @@ class ReportService:
             progress=progress,
             message=message,
             error=error,
+            version=_format_report_version(version),
         )
 
         self.logger.debug(

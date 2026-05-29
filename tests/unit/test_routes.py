@@ -438,12 +438,15 @@ class TestUpdateWorkflow:
         from updater.api.routes import _update_workflow
 
         with patch("updater.api.routes.StateManager") as MockSM:
-            with patch("updater.api.routes.ReportService"):
+            with patch("updater.api.routes.ReportService") as MockReport:
                 with patch("updater.api.routes.DeployService"):
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         mock_sm = MagicMock()
                         mock_sm.get_persistent_state.return_value = None
                         MockSM.return_value = mock_sm
+                        mock_report = MagicMock()
+                        mock_report.report_progress = AsyncMock()
+                        MockReport.return_value = mock_report
 
                         mock_display = MagicMock()
                         mock_display.show_printer = AsyncMock(return_value=True)
@@ -454,6 +457,8 @@ class TestUpdateWorkflow:
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
         assert call_kwargs["stage"] == StageEnum.FAILED
+        mock_report.report_progress.assert_awaited_once()
+        assert mock_report.report_progress.await_args.kwargs["version"] == "1.0.0"
         mock_display.show_printer.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -462,7 +467,7 @@ class TestUpdateWorkflow:
         from updater.api.routes import _update_workflow
 
         with patch("updater.api.routes.StateManager") as MockSM:
-            with patch("updater.api.routes.ReportService"):
+            with patch("updater.api.routes.ReportService") as MockReport:
                 with patch("updater.api.routes.DeployService"):
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         mock_sm = MagicMock()
@@ -470,6 +475,9 @@ class TestUpdateWorkflow:
                         persistent.package_name = "missing.zip"
                         mock_sm.get_persistent_state.return_value = persistent
                         MockSM.return_value = mock_sm
+                        mock_report = MagicMock()
+                        mock_report.report_progress = AsyncMock()
+                        MockReport.return_value = mock_report
 
                         mock_display = MagicMock()
                         mock_display.show_printer = AsyncMock(return_value=True)
@@ -488,6 +496,8 @@ class TestUpdateWorkflow:
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
         assert call_kwargs["stage"] == StageEnum.FAILED
+        mock_report.report_progress.assert_awaited_once()
+        assert mock_report.report_progress.await_args.kwargs["version"] == "1.0.0"
         mock_display.show_printer.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -500,7 +510,7 @@ class TestUpdateWorkflow:
         pkg_file.write_bytes(b"fake")
 
         with patch("updater.api.routes.StateManager") as MockSM:
-            with patch("updater.api.routes.ReportService"):
+            with patch("updater.api.routes.ReportService") as MockReport:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
@@ -511,6 +521,9 @@ class TestUpdateWorkflow:
                                 persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
                                 mock_sm.get_persistent_state.return_value = persistent
                                 MockSM.return_value = mock_sm
+                                mock_report = MagicMock()
+                                mock_report.report_progress = AsyncMock()
+                                MockReport.return_value = mock_report
 
                                 mock_display = MagicMock()
                                 mock_display.show_updater = AsyncMock(return_value=True)
@@ -536,6 +549,8 @@ class TestUpdateWorkflow:
         call_kwargs = mock_sm.update_status.call_args[1]
         assert call_kwargs["stage"] == StageEnum.FAILED
         assert "UPDATE_FAILED" in call_kwargs["error"]
+        mock_report.report_progress.assert_awaited_once()
+        assert mock_report.report_progress.await_args.kwargs["version"] == "1.0.0"
         mock_display.show_printer.assert_awaited_once()
 
     @pytest.mark.asyncio

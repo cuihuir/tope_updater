@@ -76,6 +76,58 @@ class TestReportService:
             assert payload['progress'] == 50
             assert payload['message'] == "Downloading package..."
             assert payload['error'] is None
+            assert payload['version'] is None
+
+    @pytest.mark.asyncio
+    async def test_report_progress_includes_v_prefixed_version(self, report_service):
+        """Report payload should include the OTA target version with v prefix."""
+        # Arrange
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch('updater.services.reporter.httpx.AsyncClient', return_value=mock_client):
+            # Act
+            await report_service.report_progress(
+                stage=StageEnum.INSTALLING,
+                progress=40,
+                message="Installing version 0.1.7...",
+                version="0.1.7",
+            )
+
+        # Assert
+        payload = mock_client.post.call_args[1]['json']
+        assert payload['version'] == "v0.1.7"
+
+    @pytest.mark.asyncio
+    async def test_report_progress_does_not_double_prefix_version(self, report_service):
+        """Report payload should preserve an already v-prefixed version."""
+        # Arrange
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch('updater.services.reporter.httpx.AsyncClient', return_value=mock_client):
+            # Act
+            await report_service.report_progress(
+                stage=StageEnum.FAILED,
+                progress=0,
+                message="Update failed",
+                error="DEPLOYMENT_FAILED",
+                version="v0.1.7",
+            )
+
+        # Assert
+        payload = mock_client.post.call_args[1]['json']
+        assert payload['version'] == "v0.1.7"
 
     @pytest.mark.asyncio
     async def test_report_progress_with_error(self, report_service):

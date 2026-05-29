@@ -105,6 +105,7 @@ class DownloadService:
                 stage=StageEnum.DOWNLOADING,
                 progress=initial_progress,
                 message=f"Downloading version {version}...",
+                version=version,
             )
 
         # Perform resumable download
@@ -141,6 +142,7 @@ class DownloadService:
                     progress=current_progress,
                     message="Download validation failed",
                     error=str(e),
+                    version=version,
                 )
             raise
         except Exception as e:
@@ -164,6 +166,7 @@ class DownloadService:
                     progress=current_progress,
                     message="Download failed",
                     error=f"DOWNLOAD_FAILED: {str(e)}",
+                    version=version,
                 )
             raise
 
@@ -181,6 +184,7 @@ class DownloadService:
                 stage=StageEnum.VERIFYING,
                 progress=0,
                 message="Verifying package integrity...",
+                version=version,
             )
 
         try:
@@ -216,6 +220,7 @@ class DownloadService:
                     progress=100,
                     message="MD5 verification failed",
                     error=str(e),
+                    version=version,
                 )
             raise
 
@@ -245,6 +250,7 @@ class DownloadService:
                 stage=StageEnum.TO_INSTALL,
                 progress=100,
                 message=f"Package ready to install: {version}",
+                version=version,
             )
 
         return target_path
@@ -320,6 +326,7 @@ class DownloadService:
                                     stage=StageEnum.DOWNLOADING,
                                     progress=current_progress,
                                     message=f"Downloading version {version}...",
+                                    version=version,
                                 )
 
                             # Save persistent state for resume capability

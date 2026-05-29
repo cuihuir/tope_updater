@@ -97,6 +97,7 @@ class DeployService:
                 stage=StageEnum.INSTALLING,
                 progress=0,
                 message=f"Installing version {version}...",
+                version=version,
             )
 
         # Track version directory for cleanup on failure
@@ -145,6 +146,7 @@ class DeployService:
                         stage=StageEnum.INSTALLING,
                         progress=5,
                         message="Stopping services...",
+                        version=version,
                     )
 
                 await self._stop_services(modules_with_services)
@@ -168,6 +170,7 @@ class DeployService:
                         stage=StageEnum.INSTALLING,
                         progress=progress,
                         message=f"Installing module {module.name} ({idx}/{total_modules})...",
+                        version=version,
                     )
 
                 # Deploy to version directory (not to final destination)
@@ -191,6 +194,7 @@ class DeployService:
                     stage=StageEnum.INSTALLING,
                     progress=95,
                     message="Verifying deployment...",
+                    version=version,
                 )
 
             await self._verify_deployment(manifest, version_dir)
@@ -218,6 +222,7 @@ class DeployService:
                         stage=StageEnum.INSTALLING,
                         progress=98,
                         message="Starting services...",
+                        version=version,
                     )
 
                 await self._start_services(modules_with_services)
@@ -236,6 +241,7 @@ class DeployService:
                     stage=StageEnum.SUCCESS,
                     progress=100,
                     message=f"Successfully installed version {version}",
+                    version=version,
                 )
             self._discard_external_backups(external_backups)
 
@@ -261,6 +267,7 @@ class DeployService:
                     progress=0,
                     message="Deployment failed, initiating rollback...",
                     error=f"DEPLOYMENT_FAILED: {str(e)}",
+                    version=version,
                 )
 
             # Perform two-level rollback: previous → factory
@@ -707,6 +714,7 @@ class DeployService:
                 progress=0,
                 message="Rolling back to previous version...",
                 error="ROLLBACK_LEVEL_1",
+                version=manifest.version,
             )
 
         try:
@@ -746,6 +754,7 @@ class DeployService:
                     progress=0,
                     message=f"Rolled back to version {previous_version}",
                     error=f"ROLLBACK_LEVEL_1_SUCCESS: {previous_version}",
+                    version=manifest.version,
                 )
 
             return previous_version
@@ -760,6 +769,7 @@ class DeployService:
                     progress=0,
                     message="Level 1 rollback failed, attempting Level 2...",
                     error=f"ROLLBACK_LEVEL_1_FAILED: {str(e)}",
+                    version=manifest.version,
                 )
 
             raise RuntimeError(f"ROLLBACK_LEVEL_1_FAILED: {e}") from e
@@ -787,6 +797,7 @@ class DeployService:
                 progress=0,
                 message="Rolling back to factory version...",
                 error="ROLLBACK_LEVEL_2",
+                version=manifest.version,
             )
 
         try:
@@ -826,6 +837,7 @@ class DeployService:
                     progress=0,
                     message=f"Rolled back to factory version {factory_version}",
                     error=f"ROLLBACK_LEVEL_2_SUCCESS: {factory_version}",
+                    version=manifest.version,
                 )
 
             return factory_version
@@ -840,6 +852,7 @@ class DeployService:
                     progress=0,
                     message="Factory rollback failed - manual intervention required",
                     error=f"ROLLBACK_LEVEL_2_FAILED: {str(e)}",
+                    version=manifest.version,
                 )
 
             raise RuntimeError(f"ROLLBACK_LEVEL_2_FAILED: {e}") from e
@@ -958,6 +971,7 @@ class DeployService:
                             f"ROLLBACK_LEVEL_1_FAILED: {level1_error}\n"
                             f"ROLLBACK_LEVEL_2_FAILED: {level2_error}"
                         ),
+                        version=manifest.version,
                     )
 
                 raise RuntimeError(
