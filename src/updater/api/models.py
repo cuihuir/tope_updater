@@ -63,7 +63,10 @@ class DownloadRequest(BaseModel):
     def validate_package_name(cls, value: str) -> str:
         """Require a plain local ZIP filename under ./tmp."""
         if "/" in value or "\\" in value or ".." in value:
-            raise ValueError("package_name must be a plain filename")
+            if "/" in value:
+                value = value.rsplit("/", 1)[-1]
+            else:
+                value = value.rsplit("\\", 1)[-1]
         if not value.endswith(".zip"):
             raise ValueError("package_name must end with .zip")
         if not value.removesuffix(".zip"):

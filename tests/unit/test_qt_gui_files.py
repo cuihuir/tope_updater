@@ -36,3 +36,14 @@ def test_qml_window_rotates_to_landscape_panel():
     assert "width: root.height" in source
     assert "height: root.width" in source
     assert "rotation: 90" in source
+
+def test_qml_terminal_state_has_countdown_and_ok_exit():
+    source = (
+        ROOT / "src" / "updater" / "qt_gui" / "qml" / "UpdaterWindow.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "progressModel.terminal" in source
+    assert "progressModel.countdownSeconds" in source
+    assert "tickTerminalCountdown" in source
+    assert "confirmExit" in source
+    assert "OK" in source

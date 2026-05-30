@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -25,6 +26,41 @@ import logging
 
 router = APIRouter(prefix="/api/v1.0")
 logger = logging.getLogger(__name__)
+_terminal_ack_event: asyncio.Event | None = None
+
+
+def _redact_url_query(url: str) -> str:
+    """Keep URL identity for debugging without logging signed query secrets."""
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, "<redacted>", parts.fragment)
+    )
+
+
+def _log_download_request(request: DownloadRequest) -> None:
+    """Log normalized /download payload shape for device-api integration."""
+    payload = {
+        "version": request.version,
+        "package_url": _redact_url_query(request.package_url),
+        "package_name": request.package_name,
+        "package_size": request.package_size,
+        "package_md5": request.package_md5,
+    }
+    field_types = {name: type(value).__name__ for name, value in payload.items()}
+    logger.info(
+        f"received /download request: payload={payload}, field_types={field_types}"
+    )
+
+
+def _log_update_request(request: UpdateRequest) -> None:
+    """Log normalized /update payload shape for device-api integration."""
+    payload = {"version": request.version}
+    field_types = {name: type(value).__name__ for name, value in payload.items()}
+    logger.info(
+        f"received /update request: payload={payload}, field_types={field_types}"
+    )
 
 
 def _delete_pending_package(state_manager: StateManager, persistent_state) -> None:
@@ -80,6 +116,34 @@ def _mark_update_starting(state_manager: StateManager, version: str) -> None:
         progress=0,
         message=f"Installing version {version}...",
     )
+
+def _create_terminal_ack_event() -> asyncio.Event:
+    """Create the current install's terminal acknowledgement event."""
+    global _terminal_ack_event
+    _terminal_ack_event = asyncio.Event()
+    return _terminal_ack_event
+
+def signal_terminal_ack() -> bool:
+    """Signal that updater-gui can leave the terminal result screen."""
+    if _terminal_ack_event is None:
+        return False
+    _terminal_ack_event.set()
+    return True
+
+async def _wait_for_terminal_ack(timeout: float = 65.0) -> bool:
+    """Wait until user confirms terminal result or the display timeout expires."""
+    if _terminal_ack_event is None:
+        await asyncio.sleep(timeout)
+        return False
+    try:
+        await asyncio.wait_for(_terminal_ack_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+def _clear_terminal_ack_event() -> None:
+    global _terminal_ack_event
+    _terminal_ack_event = None
 
 
 @router.get(
@@ -182,6 +246,20 @@ async def get_progress():
     else:
         return ProgressResponse(code=200, msg="success", data=status)
 
+@router.post(
+    "/return-to-system",
+    response_model=SuccessResponse,
+    tags=["OTA Operations"],
+    summary="确认 OTA 终态提示并返回系统界面",
+)
+async def post_return_to_system():
+    """POST /api/v1.0/return-to-system - Confirm terminal OTA result screen."""
+    signal_terminal_ack()
+    return JSONResponse(
+        status_code=200,
+        content={"code": 200, "msg": "success", "data": None},
+    )
+
 
 @router.post(
     "/download",
@@ -237,6 +315,7 @@ async def post_download(request: DownloadRequest, background_tasks: BackgroundTa
         HTTPException 409 if already in progress
         JSONResponse 409 if another active operation is in progress
     """
+    _log_download_request(request)
     state_manager = StateManager()
     current_status = state_manager.get_status()
 
@@ -358,6 +437,7 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
         HTTPException 409 if already in progress
         HTTPException 410 if package expired (>24h after verification)
     """
+    _log_update_request(request)
     state_manager = StateManager()
     current_status = state_manager.get_status()
 
@@ -447,6 +527,7 @@ async def _update_workflow(version: str) -> None:
     reporter = ReportService()
     deploy_service = DeployService(reporter=reporter)
     display_service = DisplaySwitchService()
+    _create_terminal_ack_event()
 
     try:
         # Get package path
@@ -485,8 +566,8 @@ async def _update_workflow(version: str) -> None:
         # Cleanup
         state_manager.delete_state()
 
-        # Reset to idle after success so next upgrade can proceed
-        await asyncio.sleep(65)
+        # Keep updater-gui terminal result visible until user confirms or timeout.
+        await _wait_for_terminal_ack(65)
         state_manager.reset()
 
     except Exception as e:
@@ -504,7 +585,9 @@ async def _update_workflow(version: str) -> None:
             error=error,
             version=version,
         )
+        await _wait_for_terminal_ack(65)
 
     finally:
+        _clear_terminal_ack_event()
         if not await display_service.show_printer():
             logger.error("Failed to switch display back to printer GUI")

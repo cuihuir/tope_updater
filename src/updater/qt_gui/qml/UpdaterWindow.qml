@@ -60,6 +60,44 @@ Window {
                 font.pixelSize: 28
                 horizontalAlignment: Text.AlignHCenter
             }
+
+            Text {
+                width: parent.width
+                visible: progressModel.terminal
+                text: "Returning to system in " + progressModel.countdownSeconds + "s"
+                color: "#B8C2CC"
+                font.pixelSize: 22
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Rectangle {
+                visible: progressModel.terminal
+                width: 168
+                height: 56
+                radius: 8
+                color: "#F4F7FA"
+                anchors.horizontalCenter: parent.horizontalCenter
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "OK"
+                    color: "#101418"
+                    font.pixelSize: 24
+                    font.bold: true
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: progressModel.confirmExit()
+                }
+            }
         }
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: progressModel.terminal && progressModel.countdownSeconds > 0
+        onTriggered: progressModel.tickTerminalCountdown()
     }
 }

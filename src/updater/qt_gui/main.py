@@ -4,11 +4,15 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QCoreApplication, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
-from updater.qt_gui.progress_client import fetch_progress
+from updater.qt_gui.progress_client import (
+    fetch_progress,
+    merge_progress_update,
+    request_return_to_system,
+)
 
 
 class ProgressModel(QObject):
@@ -23,6 +27,8 @@ class ProgressModel(QObject):
         self._progress = 0
         self._message = "Waiting for updater..."
         self._error = ""
+        self._terminal = False
+        self._countdown_seconds = 60
 
     @Property(str, notify=changed)
     def stage(self):
@@ -40,14 +46,53 @@ class ProgressModel(QObject):
     def error(self):
         return self._error
 
+    @Property(bool, notify=changed)
+    def terminal(self):
+        return self._terminal
+
+    @Property(int, notify=changed)
+    def countdownSeconds(self):
+        return self._countdown_seconds
+
     @Slot()
     def refresh(self):
+        if self._terminal:
+            return
         data = fetch_progress(self.url)
+        data = merge_progress_update(
+            {
+                "stage": self._stage,
+                "progress": self._progress,
+                "message": self._message,
+                "error": self._error,
+                "terminal": self._terminal,
+            },
+            data,
+        )
         self._stage = data["stage"]
         self._progress = data["progress"]
         self._message = data["message"]
         self._error = data["error"]
+        self._terminal = bool(data["terminal"])
+        if self._terminal:
+            self._countdown_seconds = 60
         self.changed.emit()
+
+    @Slot()
+    def tickTerminalCountdown(self):
+        if not self._terminal:
+            return
+        self._countdown_seconds = max(0, self._countdown_seconds - 1)
+        self.changed.emit()
+        if self._countdown_seconds <= 0:
+            self.confirmExit()
+
+    @Slot()
+    def confirmExit(self):
+        request_return_to_system(self.url)
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.quit()
 
 
 def main() -> int:

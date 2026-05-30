@@ -1,5 +1,6 @@
 """Unit tests for ReportService."""
 
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
@@ -77,6 +78,44 @@ class TestReportService:
             assert payload['message'] == "Downloading package..."
             assert payload['error'] is None
             assert payload['version'] is None
+
+    @pytest.mark.asyncio
+    async def test_report_progress_logs_payload_and_response_body(
+        self, report_service, caplog
+    ):
+        """联调日志应包含实际上报 JSON、HTTP 状态码和响应 body。"""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = '{"code":400,"msg":"report error"}'
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server error",
+            request=httpx.Request(
+                "POST", "http://test-api:9080/api/v1.0/ota/report"
+            ),
+            response=mock_response,
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        caplog.set_level(logging.INFO, logger="updater.reporter")
+        with patch("updater.services.reporter.httpx.AsyncClient", return_value=mock_client):
+            await report_service.report_progress(
+                stage=StageEnum.DOWNLOADING,
+                progress=0,
+                message="Downloading version 0.1.1...",
+                version="0.1.1",
+            )
+
+        log_text = caplog.text
+        assert "device-api report request" in log_text
+        assert "'stage': 'downloading'" in log_text
+        assert "'progress': 0" in log_text
+        assert "'version': 'v0.1.1'" in log_text
+        assert "status_code=500" in log_text
+        assert 'response_body={"code":400,"msg":"report error"}' in log_text
 
     @pytest.mark.asyncio
     async def test_report_progress_includes_v_prefixed_version(self, report_service):

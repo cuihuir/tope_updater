@@ -64,27 +64,42 @@ class ReportService:
             error=error,
             version=format_report_version(version),
         )
+        payload_json = payload.model_dump(mode="json")
 
-        self.logger.debug(
-            f"Reporting to device-api: stage={stage.value}, progress={progress}%"
+        self.logger.info(
+            f"device-api report request: endpoint={self.report_endpoint}, "
+            f"payload={payload_json}"
         )
 
         try:
             async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
                 response = await client.post(
                     self.report_endpoint,
-                    json=payload.model_dump(mode="json"),
+                    json=payload_json,
+                )
+                self.logger.info(
+                    "device-api report response: "
+                    f"status_code={response.status_code}, "
+                    f"response_body={response.text}"
                 )
                 response.raise_for_status()
-                self.logger.debug("Report sent successfully")
 
         except httpx.HTTPError as e:
+            response = getattr(e, "response", None)
+            if response is not None:
+                self.logger.warning(
+                    "device-api report failed: "
+                    f"status_code={response.status_code}, "
+                    f"response_body={response.text}, "
+                    f"payload={payload_json}"
+                )
             self.logger.warning(
                 f"Failed to report progress to device-api: {e}. "
                 f"Continuing OTA operation..."
             )
         except Exception as e:
             self.logger.error(
-                f"Unexpected error reporting to device-api: {e}",
+                f"Unexpected error reporting to device-api: {e}. "
+                f"payload={payload_json}",
                 exc_info=True,
             )

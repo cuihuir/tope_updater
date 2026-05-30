@@ -109,6 +109,15 @@ class TestGetProgress:
         assert "MD5_MISMATCH" in body["msg"]
         assert body["stage"] == "failed"
 
+    def test_return_to_system_signals_terminal_ack(self, client):
+        """updater-gui 点击 OK 时应通知后台结束终态等待。"""
+        with patch("updater.api.routes.signal_terminal_ack") as mock_signal:
+            resp = client.post("/api/v1.0/return-to-system")
+
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 200
+        mock_signal.assert_called_once()
+
     def test_failed_state_no_error_field(self, client):
         """失败状态但无 error 字段时，msg 应为通用错误消息。"""
         with patch("updater.api.routes.StateManager") as MockSM:
@@ -272,13 +281,35 @@ class TestPostDownload:
         assert mock_workflow.call_args.args[0] == "1.0.0"
 
 
-    def test_rejects_package_name_with_path_separator(self, client):
-        """package_name 只能是普通 zip 文件名，不能逃出 tmp 目录。"""
+    def test_download_request_log_redacts_signed_url_query(self, client, caplog):
+        """联调日志应记录下载请求格式，但不能泄露签名 URL query。"""
+        payload = {
+            **self._valid_payload,
+            "package_url": "https://example.com/ota/pkg.zip?token=secret&sig=abc",
+        }
+        with patch("updater.api.routes.StateManager") as MockSM:
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.IDLE)
+            MockSM.return_value.get_persistent_state.return_value = None
+
+            import logging
+
+            caplog.set_level(logging.INFO, logger="updater.api.routes")
+            resp = client.post("/api/v1.0/download", json=payload)
+
+        assert resp.json()["code"] == 200
+        assert "received /download request" in caplog.text
+        assert "https://example.com/ota/pkg.zip?<redacted>" in caplog.text
+        assert "token=secret" not in caplog.text
+        assert "field_types" in caplog.text
+
+    def test_sanitizes_package_name_with_path_separator(self, client):
+        """外部 package_name 可含路径，但本地保存名会被净化。"""
         payload = {**self._valid_payload, "package_name": "../pkg.zip"}
 
         resp = client.post("/api/v1.0/download", json=payload)
 
-        assert resp.status_code == 422
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 200
 
     def test_rejects_non_zip_package_name(self, client):
         """package_name 必须是 zip 包，避免误传任意路径或文件类型。"""
@@ -603,18 +634,20 @@ class TestUpdateWorkflow:
             with patch("updater.api.routes.ReportService") as MockReport:
                 with patch("updater.api.routes.DeployService"):
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
-                        mock_sm = MagicMock()
-                        mock_sm.get_persistent_state.return_value = None
-                        MockSM.return_value = mock_sm
-                        mock_report = MagicMock()
-                        mock_report.report_progress = AsyncMock()
-                        MockReport.return_value = mock_report
+                        with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock) as mock_wait:
+                            mock_wait.return_value = False
+                            mock_sm = MagicMock()
+                            mock_sm.get_persistent_state.return_value = None
+                            MockSM.return_value = mock_sm
+                            mock_report = MagicMock()
+                            mock_report.report_progress = AsyncMock()
+                            MockReport.return_value = mock_report
 
-                        mock_display = MagicMock()
-                        mock_display.show_printer = AsyncMock(return_value=True)
-                        MockDisplay.return_value = mock_display
+                            mock_display = MagicMock()
+                            mock_display.show_printer = AsyncMock(return_value=True)
+                            MockDisplay.return_value = mock_display
 
-                        await _update_workflow("1.0.0")
+                            await _update_workflow("1.0.0")
 
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
@@ -632,28 +665,30 @@ class TestUpdateWorkflow:
             with patch("updater.api.routes.ReportService") as MockReport:
                 with patch("updater.api.routes.DeployService"):
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
-                        mock_sm = MagicMock()
-                        persistent = MagicMock()
-                        persistent.package_name = "missing.zip"
-                        mock_sm.get_persistent_state.return_value = persistent
-                        MockSM.return_value = mock_sm
-                        mock_report = MagicMock()
-                        mock_report.report_progress = AsyncMock()
-                        MockReport.return_value = mock_report
+                        with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock) as mock_wait:
+                            mock_wait.return_value = False
+                            mock_sm = MagicMock()
+                            persistent = MagicMock()
+                            persistent.package_name = "missing.zip"
+                            mock_sm.get_persistent_state.return_value = persistent
+                            MockSM.return_value = mock_sm
+                            mock_report = MagicMock()
+                            mock_report.report_progress = AsyncMock()
+                            MockReport.return_value = mock_report
 
-                        mock_display = MagicMock()
-                        mock_display.show_printer = AsyncMock(return_value=True)
-                        MockDisplay.return_value = mock_display
+                            mock_display = MagicMock()
+                            mock_display.show_printer = AsyncMock(return_value=True)
+                            MockDisplay.return_value = mock_display
 
-                        # 临时目录不含该文件
-                        with patch("updater.api.routes.Path") as MockPath:
-                            mock_path = MagicMock()
-                            mock_path.__truediv__ = MagicMock(
-                                return_value=MagicMock(exists=MagicMock(return_value=False))
-                            )
-                            MockPath.return_value = mock_path
+                            # 临时目录不含该文件
+                            with patch("updater.api.routes.Path") as MockPath:
+                                mock_path = MagicMock()
+                                mock_path.__truediv__ = MagicMock(
+                                    return_value=MagicMock(exists=MagicMock(return_value=False))
+                                )
+                                MockPath.return_value = mock_path
 
-                            await _update_workflow("1.0.0")
+                                await _update_workflow("1.0.0")
 
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
@@ -677,35 +712,37 @@ class TestUpdateWorkflow:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
                             with patch("updater.api.routes.verify_md5_or_raise"):
-                                mock_sm = MagicMock()
-                                persistent = MagicMock()
-                                persistent.package_name = "pkg.zip"
-                                persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
-                                mock_sm.get_persistent_state.return_value = persistent
-                                MockSM.return_value = mock_sm
-                                mock_report = MagicMock()
-                                mock_report.report_progress = AsyncMock()
-                                MockReport.return_value = mock_report
+                                with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock) as mock_wait:
+                                    mock_wait.return_value = False
+                                    mock_sm = MagicMock()
+                                    persistent = MagicMock()
+                                    persistent.package_name = "pkg.zip"
+                                    persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                                    mock_sm.get_persistent_state.return_value = persistent
+                                    MockSM.return_value = mock_sm
+                                    mock_report = MagicMock()
+                                    mock_report.report_progress = AsyncMock()
+                                    MockReport.return_value = mock_report
 
-                                mock_display = MagicMock()
-                                mock_display.show_updater = AsyncMock(return_value=True)
-                                mock_display.show_printer = AsyncMock(return_value=True)
-                                MockDisplay.return_value = mock_display
+                                    mock_display = MagicMock()
+                                    mock_display.show_updater = AsyncMock(return_value=True)
+                                    mock_display.show_printer = AsyncMock(return_value=True)
+                                    MockDisplay.return_value = mock_display
 
-                                # 模拟文件存在
-                                mock_path_instance = MagicMock()
-                                mock_path_instance.exists.return_value = True
-                                MockPath.return_value.__truediv__ = MagicMock(
-                                    return_value=mock_path_instance
-                                )
+                                    # 模拟文件存在
+                                    mock_path_instance = MagicMock()
+                                    mock_path_instance.exists.return_value = True
+                                    MockPath.return_value.__truediv__ = MagicMock(
+                                        return_value=mock_path_instance
+                                    )
 
-                                mock_ds = MagicMock()
-                                mock_ds.deploy_package = AsyncMock(
-                                    side_effect=RuntimeError("deploy failed")
-                                )
-                                MockDS.return_value = mock_ds
+                                    mock_ds = MagicMock()
+                                    mock_ds.deploy_package = AsyncMock(
+                                        side_effect=RuntimeError("deploy failed")
+                                    )
+                                    MockDS.return_value = mock_ds
 
-                                await _update_workflow("1.0.0")
+                                    await _update_workflow("1.0.0")
 
         mock_sm.update_status.assert_called_once()
         call_kwargs = mock_sm.update_status.call_args[1]
@@ -728,7 +765,8 @@ class TestUpdateWorkflow:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
-                            with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                            with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock) as mock_wait:
+                                mock_wait.return_value = False
                                 with patch("updater.api.routes.verify_md5_or_raise"):
                                     mock_sm = MagicMock()
                                     persistent = MagicMock()
@@ -755,7 +793,7 @@ class TestUpdateWorkflow:
                                     await _update_workflow("1.0.0")
 
         mock_sm.delete_state.assert_called_once()
-        mock_sleep.assert_called_once_with(65)
+        mock_wait.assert_awaited_once_with(65)
         mock_sm.reset.assert_called_once()
         mock_display.show_updater.assert_awaited_once()
         mock_display.show_printer.assert_awaited_once()
@@ -770,7 +808,7 @@ class TestUpdateWorkflow:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
-                            with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock):
+                            with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock):
                                 with patch("updater.api.routes.verify_md5_or_raise"):
                                     mock_sm = MagicMock()
                                     persistent = MagicMock()
@@ -813,7 +851,7 @@ class TestUpdateWorkflow:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
-                            with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock):
+                            with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock):
                                 with patch("updater.api.routes.verify_md5_or_raise", create=True) as mock_verify:
                                     mock_sm = MagicMock()
                                     persistent = MagicMock()
@@ -858,7 +896,7 @@ class TestUpdateWorkflow:
                 with patch("updater.api.routes.DeployService") as MockDS:
                     with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
                         with patch("updater.api.routes.Path") as MockPath:
-                            with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock):
+                            with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock):
                                 with patch("updater.api.routes.verify_md5_or_raise"):
                                     mock_sm = MagicMock()
                                     persistent = MagicMock()
