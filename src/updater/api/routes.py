@@ -12,6 +12,7 @@ from updater.api.models import (
     ProgressResponse,
     SuccessResponse,
 )
+from updater.models.state import StateFile
 from updater.models.status import StageEnum
 from updater.services.state_manager import StateManager
 from updater.services.download import DownloadService
@@ -24,6 +25,61 @@ import logging
 
 router = APIRouter(prefix="/api/v1.0")
 logger = logging.getLogger(__name__)
+
+
+def _delete_pending_package(state_manager: StateManager, persistent_state) -> None:
+    """Delete a pending package file and its persistent state."""
+    if not persistent_state:
+        return
+    package_name = getattr(persistent_state, "package_name", None)
+    if package_name:
+        (Path("./tmp") / package_name).unlink(missing_ok=True)
+    state_manager.delete_state()
+
+
+def _string_state_attr(persistent_state, name: str, default: str = "") -> str:
+    """Read a string attribute from persisted state, tolerating old/mocked states."""
+    value = getattr(persistent_state, name, default)
+    return value if isinstance(value, str) else default
+
+
+def _int_state_attr(persistent_state, name: str, default: int = 1) -> int:
+    """Read a positive integer attribute from persisted state."""
+    value = getattr(persistent_state, name, default)
+    return value if isinstance(value, int) and value > 0 else default
+
+
+def _is_installable_state(current_stage: StageEnum, persistent_state) -> bool:
+    """Return whether a persisted package is complete enough to install."""
+    if not persistent_state:
+        return False
+    if current_stage == StageEnum.TO_INSTALL:
+        return persistent_state.stage == StageEnum.TO_INSTALL
+    if current_stage != StageEnum.FAILED:
+        return False
+    if persistent_state.stage not in {StageEnum.INSTALLING, StageEnum.FAILED}:
+        return False
+    try:
+        return persistent_state.bytes_downloaded == persistent_state.package_size
+    except AttributeError:
+        return False
+
+def _mark_download_starting(state_manager: StateManager, version: str) -> None:
+    """Synchronously block update while the accepted download task is queued."""
+    state_manager.update_status(
+        stage=StageEnum.DOWNLOADING,
+        progress=0,
+        message=f"Downloading version {version}...",
+    )
+
+
+def _mark_update_starting(state_manager: StateManager, version: str) -> None:
+    """Synchronously block duplicate update requests while install is queued."""
+    state_manager.update_status(
+        stage=StageEnum.INSTALLING,
+        progress=0,
+        message=f"Installing version {version}...",
+    )
 
 
 @router.get(
@@ -138,7 +194,7 @@ async def get_progress():
 ### 下载流程
 
 1. 验证请求参数（版本号、URL、大小、MD5）
-2. 检查当前状态（必须是 idle/failed/success）
+2. 检查当前状态（必须是 idle/failed/success/toInstall）
 3. 启动后台下载任务
 4. 下载过程中验证：
    - HTTP Content-Length
@@ -152,7 +208,7 @@ async def get_progress():
 curl -X POST http://localhost:12315/api/v1.0/download \\
   -H "Content-Type: application/json" \\
   -d '{
-    "version": "1.0.0",
+    "version": "v1.0.0",
     "package_url": "http://localhost:8888/test-update-1.0.0.zip",
     "package_name": "test-update-1.0.0.zip",
     "package_size": 468,
@@ -163,7 +219,7 @@ curl -X POST http://localhost:12315/api/v1.0/download \\
 ### 错误码
 
 - **409** - 操作已在进行中
-- **410** - 包已过期（验证后超过 24 小时）
+- 过期待安装包会被清理并由新下载替换
     """,
 )
 async def post_download(request: DownloadRequest, background_tasks: BackgroundTasks):
@@ -179,13 +235,18 @@ async def post_download(request: DownloadRequest, background_tasks: BackgroundTa
 
     Raises:
         HTTPException 409 if already in progress
-        HTTPException 410 if package expired (>24h after verification)
+        JSONResponse 409 if another active operation is in progress
     """
     state_manager = StateManager()
     current_status = state_manager.get_status()
 
     # Check if operation already in progress
-    if current_status.stage not in [StageEnum.IDLE, StageEnum.FAILED, StageEnum.SUCCESS]:
+    if current_status.stage not in [
+        StageEnum.IDLE,
+        StageEnum.FAILED,
+        StageEnum.SUCCESS,
+        StageEnum.TO_INSTALL,
+    ]:
         return JSONResponse(
             status_code=200,
             content={
@@ -199,15 +260,11 @@ async def post_download(request: DownloadRequest, background_tasks: BackgroundTa
     # Check for expired package
     persistent_state = state_manager.get_persistent_state()
     if persistent_state and persistent_state.is_package_expired():
-        return JSONResponse(
-            status_code=200,
-            content={
-                "code": 410,
-                "msg": "Package expired (>24h after verification)",
-                "stage": current_status.stage.value,
-                "progress": current_status.progress,
-            },
-        )
+        _delete_pending_package(state_manager, persistent_state)
+    elif current_status.stage == StageEnum.TO_INSTALL and persistent_state:
+        _delete_pending_package(state_manager, persistent_state)
+
+    _mark_download_starting(state_manager, request.version)
 
     # Start download in background
     background_tasks.add_task(
@@ -259,7 +316,7 @@ async def post_download(request: DownloadRequest, background_tasks: BackgroundTa
 curl -X POST http://localhost:12315/api/v1.0/download \\
   -H "Content-Type: application/json" \\
   -d '{
-    "version": "1.0.0",
+    "version": "v1.0.0",
     "package_url": "http://localhost:8888/test-update-1.0.0.zip",
     "package_name": "test-update-1.0.0.zip",
     "package_size": 468,
@@ -272,7 +329,7 @@ curl http://localhost:12315/api/v1.0/progress
 # 3. 触发安装
 curl -X POST http://localhost:12315/api/v1.0/update \\
   -H "Content-Type: application/json" \\
-  -d '{"version": "1.0.0"}'
+  -d '{"version": "v1.0.0"}'
 
 # 4. 查询安装进度
 curl http://localhost:12315/api/v1.0/progress
@@ -305,7 +362,7 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
     current_status = state_manager.get_status()
 
     # Check if operation already in progress
-    if current_status.stage not in [StageEnum.IDLE, StageEnum.TO_INSTALL, StageEnum.SUCCESS, StageEnum.FAILED]:
+    if current_status.stage not in [StageEnum.TO_INSTALL, StageEnum.FAILED]:
         return JSONResponse(
             status_code=200,
             content={
@@ -327,6 +384,17 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
             },
         )
 
+    if not _is_installable_state(current_status.stage, persistent_state):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "code": 409,
+                "msg": f"Package is not installable: {request.version}",
+                "stage": current_status.stage.value,
+                "progress": current_status.progress,
+            },
+        )
+
     # Check for expired package
     if persistent_state.is_package_expired():
         return JSONResponse(
@@ -338,6 +406,8 @@ async def post_update(request: UpdateRequest, background_tasks: BackgroundTasks)
                 "progress": current_status.progress,
             },
         )
+
+    _mark_update_starting(state_manager, request.version)
 
     # Start update in background
     background_tasks.add_task(_update_workflow, request.version)
@@ -392,6 +462,20 @@ async def _update_workflow(version: str) -> None:
 
         if not await display_service.show_updater():
             logger.warning("Failed to switch display to updater GUI, continuing OTA")
+
+        package_size = _int_state_attr(persistent_state, "package_size")
+        state_manager.save_state(
+            StateFile(
+                version=version,
+                package_url=_string_state_attr(persistent_state, "package_url"),
+                package_name=persistent_state.package_name,
+                package_size=package_size,
+                package_md5=persistent_state.package_md5,
+                bytes_downloaded=package_size,
+                stage=StageEnum.INSTALLING,
+                verified_at=getattr(persistent_state, "verified_at", None),
+            )
+        )
 
         # Deploy package
         await deploy_service.deploy_package(package_path, version)

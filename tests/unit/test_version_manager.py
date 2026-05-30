@@ -1,11 +1,9 @@
 """Unit tests for VersionManager."""
 
 import pytest
-import os
-import stat
 import unittest.mock
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from updater.services.version_manager import VersionManager
 
 
@@ -31,6 +29,14 @@ class TestVersionManager:
     def test_create_version_dir(self, version_manager):
         """Test creating a new version directory."""
         version_dir = version_manager.create_version_dir("1.0.0")
+
+        assert version_dir.exists()
+        assert version_dir.is_dir()
+        assert version_dir.name == "v1.0.0"
+
+    def test_create_version_dir_normalizes_prefixed_version(self, version_manager):
+        """v-prefixed input should not create vv-prefixed directories."""
+        version_dir = version_manager.create_version_dir("v1.0.0")
 
         assert version_dir.exists()
         assert version_dir.is_dir()
@@ -467,9 +473,6 @@ class TestVersionManagerEdgeCases:
         target = version_manager.base_dir / "v1.0.0"
         target.mkdir()
         link_path = version_manager.base_dir / "current"
-
-        # 让 temp_link.replace 抛出异常，模拟 rename 失败
-        original_replace = Path.replace
 
         def _bad_replace(self, *args, **kwargs):
             raise OSError("replace failed")

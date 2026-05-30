@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from updater.models.status import StageEnum
+from updater.utils.version import normalize_version
 
 
 class DownloadRequest(BaseModel):
@@ -23,10 +24,16 @@ class DownloadRequest(BaseModel):
 
     version: str = Field(
         ...,
-        pattern=r"^v\d+\.\d+\.\d+$",
+        pattern=r"^v?\d+\.\d+\.\d+$",
         description="Semantic version (e.g., v1.0.0)",
-        examples=["v1.0.0", "v2.1.3"]
+        examples=["v1.0.0", "v2.1.3"],
     )
+
+    @field_validator("version")
+    @classmethod
+    def normalize_download_version(cls, value: str) -> str:
+        """Store the internal version without a leading v prefix."""
+        return normalize_version(value)
     package_url: str = Field(
         ...,
         pattern=r"^https?://.+",
@@ -77,10 +84,16 @@ class UpdateRequest(BaseModel):
 
     version: str = Field(
         ...,
-        pattern=r"^\d+\.\d+\.\d+$",
+        pattern=r"^v?\d+\.\d+\.\d+$",
         description="Version to install (must match downloaded package)",
-        examples=["1.0.0", "2.1.3"]
+        examples=["v1.0.0", "v2.1.3"],
     )
+
+    @field_validator("version")
+    @classmethod
+    def normalize_update_version(cls, value: str) -> str:
+        """Store the internal version without a leading v prefix."""
+        return normalize_version(value)
 
 
 class ProgressData(BaseModel):

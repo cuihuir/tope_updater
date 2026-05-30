@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
             state_manager.update_status(
                 stage=StageEnum.FAILED,
                 progress=0,
-                message=f"Previous operation failed, ready for retry",
+                message="Previous operation failed, ready for retry",
                 error="See logs for details",
             )
         elif state.stage == StageEnum.DOWNLOADING:
@@ -92,6 +92,18 @@ async def lifespan(app: FastAPI):
             state_manager.delete_state()
             state_manager.reset()
             logger.info("Interrupted verification cleaned up, reset to idle")
+        elif state.stage == StageEnum.INSTALLING:
+            logger.warning(
+                f"Found interrupted install: version={state.version}, marking failed"
+            )
+            failed_state = state.model_copy(update={"stage": StageEnum.FAILED})
+            state_manager.save_state(failed_state)
+            state_manager.update_status(
+                stage=StageEnum.FAILED,
+                progress=0,
+                message="Previous install interrupted",
+                error="INSTALL_INTERRUPTED",
+            )
         else:
             # Validate state integrity for other stages (TO_INSTALL, etc.)
             if state.bytes_downloaded > state.package_size:

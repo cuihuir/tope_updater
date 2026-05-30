@@ -5,6 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from updater.models.status import StageEnum
+from updater.utils.version import normalize_version
 
 
 class StateFile(BaseModel):
@@ -30,6 +31,12 @@ class StateFile(BaseModel):
     verified_at: Optional[datetime] = Field(
         None, description="Timestamp when MD5 verification completed"
     )
+
+    @field_validator("version")
+    @classmethod
+    def normalize_state_version(cls, v: str) -> str:
+        """Store persistent versions without a leading v prefix."""
+        return normalize_version(v)
 
     @field_validator("last_update", "verified_at", mode="before")
     @classmethod

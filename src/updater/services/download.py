@@ -15,6 +15,13 @@ from updater.services.reporter import ReportService
 from updater.utils.verification import verify_md5_or_raise
 
 
+def _clamp_progress(bytes_downloaded: int, package_size: int) -> int:
+    """Calculate progress percentage bounded to the API's 0..100 contract."""
+    if package_size <= 0:
+        return 0
+    return max(0, min(100, int((bytes_downloaded / package_size) * 100)))
+
+
 class DownloadService:
     """Handles resumable package downloads with progress reporting."""
 
@@ -64,11 +71,23 @@ class DownloadService:
             f"size={package_size} bytes"
         )
 
+        persistent_state = self.state_manager.get_persistent_state()
+        if persistent_state and (
+            persistent_state.stage in {StageEnum.TO_INSTALL, StageEnum.SUCCESS}
+            or persistent_state.package_url != package_url
+            or persistent_state.version != version
+            or persistent_state.package_md5 != package_md5
+            or persistent_state.package_name != package_name
+        ):
+            old_package = Path("./tmp") / persistent_state.package_name
+            old_package.unlink(missing_ok=True)
+            self.state_manager.delete_state()
+            persistent_state = None
+
         # Check for existing partial download and validate it's the same package
         bytes_downloaded = 0
         if target_path.exists():
             # Check if this is a resume of the same download
-            persistent_state = self.state_manager.get_persistent_state()
             if persistent_state:
                 # Validate URL, version, and MD5 match
                 if (persistent_state.package_url != package_url or
@@ -92,7 +111,7 @@ class DownloadService:
                 target_path.unlink()
 
         # Update state to downloading
-        initial_progress = int((bytes_downloaded / package_size) * 100)
+        initial_progress = _clamp_progress(bytes_downloaded, package_size)
         self.state_manager.update_status(
             stage=StageEnum.DOWNLOADING,
             progress=initial_progress,
@@ -124,7 +143,7 @@ class DownloadService:
             self.logger.error(f"Validation failed: {e}", exc_info=True)
 
             # Calculate current progress for error reporting
-            current_progress = int((bytes_downloaded / package_size) * 100) if package_size > 0 else 0
+            current_progress = _clamp_progress(bytes_downloaded, package_size)
 
             target_path.unlink(missing_ok=True)
             self.state_manager.delete_state()
@@ -150,7 +169,7 @@ class DownloadService:
             self.logger.error(f"Download failed: {e}", exc_info=True)
 
             # Calculate current progress for error reporting
-            current_progress = int((bytes_downloaded / package_size) * 100) if package_size > 0 else 0
+            current_progress = _clamp_progress(bytes_downloaded, package_size)
 
             self.state_manager.update_status(
                 stage=StageEnum.FAILED,
@@ -307,7 +326,9 @@ class DownloadService:
                         bytes_downloaded += len(chunk)
 
                         # Update progress every 5%
-                        current_progress = int((bytes_downloaded / package_size) * 100)
+                        current_progress = _clamp_progress(
+                            bytes_downloaded, package_size
+                        )
                         if current_progress >= last_progress + 5:
                             last_progress = current_progress
                             self.logger.debug(

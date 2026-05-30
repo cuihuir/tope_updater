@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
 
+from updater.models.state import StateFile
 from updater.models.status import StageEnum
 from updater.api.models import ProgressData
 from updater.services.state_manager import StateManager
@@ -143,7 +144,7 @@ class TestPostDownload:
     """POST /api/v1.0/download"""
 
     _valid_payload = {
-        "version": "1.0.0",
+        "version": "v1.0.0",
         "package_url": "http://localhost:8888/pkg.zip",
         "package_name": "pkg.zip",
         "package_size": 1024,
@@ -186,17 +187,19 @@ class TestPostDownload:
 
         assert resp.json()["code"] == 409
 
-    def test_expired_package_returns_410(self, client):
-        """包已过期时应返回 code=410。"""
+    def test_expired_package_allows_replacement_download(self, client):
+        """下载新包时，过期待安装包应被清理并允许替换。"""
         with patch("updater.api.routes.StateManager") as MockSM:
-            MockSM.return_value.get_status.return_value = _make_status(StageEnum.IDLE)
-            MockSM.return_value.get_persistent_state.return_value = _make_persistent_state(
+            mock_sm = MockSM.return_value
+            mock_sm.get_status.return_value = _make_status(StageEnum.IDLE)
+            mock_sm.get_persistent_state.return_value = _make_persistent_state(
                 expired=True
             )
 
             resp = client.post("/api/v1.0/download", json=self._valid_payload)
 
-        assert resp.json()["code"] == 410
+        assert resp.json()["code"] == 200
+        mock_sm.delete_state.assert_called_once()
 
     def test_success_state_allows_download(self, client):
         """success 状态下应允许新的下载请求。"""
@@ -217,6 +220,56 @@ class TestPostDownload:
             resp = client.post("/api/v1.0/download", json=self._valid_payload)
 
         assert resp.json()["code"] == 200
+
+    def test_to_install_state_allows_download(self, client):
+        """toInstall 表示有待安装包，不应阻塞新版本下载。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            mock_sm = MockSM.return_value
+            mock_sm.get_status.return_value = _make_status(
+                StageEnum.TO_INSTALL
+            )
+            mock_sm.get_persistent_state.return_value = (
+                _make_persistent_state("0.9.0")
+            )
+
+            resp = client.post("/api/v1.0/download", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+        mock_sm.delete_state.assert_called_once()
+        mock_sm.update_status.assert_called_once()
+        assert mock_sm.update_status.call_args.kwargs["stage"] == StageEnum.DOWNLOADING
+
+    def test_expired_package_is_cleared_and_download_starts(self, client):
+        """新下载请求应清理过期待安装包，而不是返回 410 卡住。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            mock_sm = MockSM.return_value
+            mock_sm.get_status.return_value = _make_status(StageEnum.IDLE)
+            mock_sm.get_persistent_state.return_value = _make_persistent_state(
+                version="0.9.0",
+                expired=True,
+            )
+
+            with patch("updater.api.routes.Path") as MockPath:
+                old_package = MagicMock()
+                MockPath.return_value.__truediv__.return_value = old_package
+
+                resp = client.post("/api/v1.0/download", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+        old_package.unlink.assert_called_once_with(missing_ok=True)
+        mock_sm.delete_state.assert_called_once()
+
+    def test_download_route_normalizes_v_version_for_workflow(self, client):
+        """API 接收 v 版本，但内部工作流使用不带 v 的规范化版本。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.IDLE)
+            MockSM.return_value.get_persistent_state.return_value = None
+
+            with patch("updater.api.routes._download_workflow") as mock_workflow:
+                resp = client.post("/api/v1.0/download", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+        assert mock_workflow.call_args.args[0] == "1.0.0"
 
 
     def test_rejects_package_name_with_path_separator(self, client):
@@ -243,7 +296,7 @@ class TestPostDownload:
 class TestPostUpdate:
     """POST /api/v1.0/update"""
 
-    _valid_payload = {"version": "1.0.0"}
+    _valid_payload = {"version": "v1.0.0"}
 
     def test_to_install_state_starts_update(self, client):
         """toInstall 状态下应接受安装请求。"""
@@ -259,6 +312,19 @@ class TestPostUpdate:
 
         assert resp.status_code == 200
         assert resp.json()["code"] == 200
+
+    def test_update_marks_installing_before_background_task(self, client):
+        """接受安装请求时应同步切到 installing，避免重复 /update 排队。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            mock_sm = MockSM.return_value
+            mock_sm.get_status.return_value = _make_status(StageEnum.TO_INSTALL)
+            mock_sm.get_persistent_state.return_value = _make_persistent_state("1.0.0")
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+        mock_sm.update_status.assert_called_once()
+        assert mock_sm.update_status.call_args.kwargs["stage"] == StageEnum.INSTALLING
 
     def test_downloading_state_returns_409(self, client):
         """下载进行中时安装请求应返回 code=409。"""
@@ -338,6 +404,102 @@ class TestPostUpdate:
             resp = client.post("/api/v1.0/update", json=self._valid_payload)
 
         assert resp.json()["code"] == 200
+
+    def test_update_route_normalizes_v_version_for_workflow(self, client):
+        """安装接口接收 v 版本，但后台安装使用不带 v 的内部版本。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            MockSM.return_value.get_status.return_value = _make_status(
+                StageEnum.TO_INSTALL
+            )
+            MockSM.return_value.get_persistent_state.return_value = (
+                _make_persistent_state("1.0.0")
+            )
+
+            with patch("updater.api.routes._update_workflow") as mock_workflow:
+                resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+        assert mock_workflow.call_args.args[0] == "1.0.0"
+
+    def test_idle_state_rejects_update_even_if_package_exists(self, client):
+        """安装入口只应从 toInstall 或可重试 failed 状态进入。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.IDLE)
+            MockSM.return_value.get_persistent_state.return_value = (
+                _make_persistent_state("1.0.0")
+            )
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 409
+
+    def test_failed_state_rejects_update_when_persistent_state_is_not_installable(
+        self, client
+    ):
+        """failed 状态只能重试已验证待安装包，不能安装失败下载状态。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            pending = _make_persistent_state("1.0.0")
+            pending.stage = StageEnum.FAILED
+            pending.bytes_downloaded = 100
+            pending.package_size = 1000
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.FAILED)
+            MockSM.return_value.get_persistent_state.return_value = pending
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 409
+
+    def test_failed_state_allows_update_retry_for_persisted_interrupted_install(
+        self, client
+    ):
+        """启动恢复将 installing 持久化为 failed 后，仍应允许重试安装。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            pending = _make_persistent_state("1.0.0")
+            pending.stage = StageEnum.FAILED
+            pending.bytes_downloaded = 1000
+            pending.package_size = 1000
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.FAILED)
+            MockSM.return_value.get_persistent_state.return_value = pending
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 200
+
+    def test_update_matches_legacy_v_prefixed_persistent_state(self, client):
+        """旧版本留下的 v 前缀 state 应迁移为内部无 v 后继续可安装。"""
+        pending = StateFile(
+            version="v1.0.0",
+            package_url="http://localhost:8888/pkg.zip",
+            package_name="pkg.zip",
+            package_size=1000,
+            package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            bytes_downloaded=1000,
+            stage=StageEnum.TO_INSTALL,
+        )
+        with patch("updater.api.routes.StateManager") as MockSM:
+            MockSM.return_value.get_status.return_value = _make_status(
+                StageEnum.TO_INSTALL
+            )
+            MockSM.return_value.get_persistent_state.return_value = pending
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert pending.version == "1.0.0"
+        assert resp.json()["code"] == 200
+
+    def test_failed_state_rejects_update_with_plain_to_install_state(self, client):
+        """当前 failed 不能直接安装普通 toInstall state，避免状态语义混乱。"""
+        with patch("updater.api.routes.StateManager") as MockSM:
+            pending = _make_persistent_state("1.0.0")
+            pending.stage = StageEnum.TO_INSTALL
+            pending.bytes_downloaded = 1000
+            pending.package_size = 1000
+            MockSM.return_value.get_status.return_value = _make_status(StageEnum.FAILED)
+            MockSM.return_value.get_persistent_state.return_value = pending
+
+            resp = client.post("/api/v1.0/update", json=self._valid_payload)
+
+        assert resp.json()["code"] == 409
 
 
 # -----------------------------------------------------------------------
@@ -597,6 +759,49 @@ class TestUpdateWorkflow:
         mock_sm.reset.assert_called_once()
         mock_display.show_updater.assert_awaited_once()
         mock_display.show_printer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_workflow_persists_installing_state_before_deploy(self, tmp_path):
+        """部署前应持久化 installing，重启后能识别安装中断。"""
+        from updater.api.routes import _update_workflow
+
+        with patch("updater.api.routes.StateManager") as MockSM:
+            with patch("updater.api.routes.ReportService"):
+                with patch("updater.api.routes.DeployService") as MockDS:
+                    with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
+                        with patch("updater.api.routes.Path") as MockPath:
+                            with patch("updater.api.routes.asyncio.sleep", new_callable=AsyncMock):
+                                with patch("updater.api.routes.verify_md5_or_raise"):
+                                    mock_sm = MagicMock()
+                                    persistent = MagicMock()
+                                    persistent.version = "1.0.0"
+                                    persistent.package_url = "http://example.com/pkg.zip"
+                                    persistent.package_name = "pkg.zip"
+                                    persistent.package_size = 1024
+                                    persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                                    mock_sm.get_persistent_state.return_value = persistent
+                                    MockSM.return_value = mock_sm
+
+                                    mock_display = MagicMock()
+                                    mock_display.show_updater = AsyncMock(return_value=True)
+                                    mock_display.show_printer = AsyncMock(return_value=True)
+                                    MockDisplay.return_value = mock_display
+
+                                    mock_path_instance = MagicMock()
+                                    mock_path_instance.exists.return_value = True
+                                    MockPath.return_value.__truediv__ = MagicMock(
+                                        return_value=mock_path_instance
+                                    )
+
+                                    mock_ds = MagicMock()
+                                    mock_ds.deploy_package = AsyncMock(return_value=None)
+                                    MockDS.return_value = mock_ds
+
+                                    await _update_workflow("1.0.0")
+
+        saved_state = mock_sm.save_state.call_args_list[0].args[0]
+        assert saved_state.version == "1.0.0"
+        assert saved_state.stage == StageEnum.INSTALLING
 
     @pytest.mark.asyncio
     async def test_update_workflow_verifies_md5_before_deploy(self, tmp_path):

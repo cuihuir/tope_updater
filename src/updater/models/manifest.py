@@ -3,6 +3,8 @@
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
+from updater.utils.version import normalize_version
+
 
 class ManifestModule(BaseModel):
     """Module entry in manifest.json.
@@ -57,10 +59,18 @@ class Manifest(BaseModel):
     Embedded in package root, defines version and modules to deploy.
     """
 
-    version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$", description="Semantic version")
+    version: str = Field(
+        ..., pattern=r"^v?\d+\.\d+\.\d+$", description="Semantic version"
+    )
     modules: list[ManifestModule] = Field(
         ..., min_length=1, description="Modules to deploy"
     )
+
+    @field_validator("version")
+    @classmethod
+    def normalize_manifest_version(cls, v: str) -> str:
+        """Store manifest version without a leading v prefix."""
+        return normalize_version(v)
 
     @field_validator("modules")
     @classmethod

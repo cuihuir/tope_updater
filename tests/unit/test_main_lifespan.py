@@ -1,10 +1,11 @@
 """Unit tests for main.py lifespan startup logic."""
 
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from updater.models.status import StageEnum
+from updater.models.state import StateFile
 from updater.services.state_manager import StateManager
 from updater.services.reporter import ReportService
 
@@ -157,6 +158,42 @@ class TestLifespanVerifyingInterrupted:
 
         mock_sm.delete_state.assert_called_once()
         mock_sm.reset.assert_called_once()
+
+
+@pytest.mark.unit
+class TestLifespanInstallingInterrupted:
+    """lifespan 启动：安装被中断时应保守恢复为 failed。"""
+
+    def test_installing_interrupted_updates_failed_status(self):
+        state = _make_state(stage=StageEnum.INSTALLING, expired=False)
+
+        for c, mock_sm in _make_client(load_state_return=state):
+            resp = c.get("/")
+            assert resp.status_code == 200
+
+        mock_sm.update_status.assert_called_once()
+        call_kwargs = mock_sm.update_status.call_args.kwargs
+        assert call_kwargs["stage"] == StageEnum.FAILED
+        assert call_kwargs["error"] == "INSTALL_INTERRUPTED"
+
+    def test_installing_interrupted_persists_failed_state(self):
+        state = StateFile(
+            version="1.0.0",
+            package_url="http://example.com/pkg.zip",
+            package_name="pkg.zip",
+            package_size=1000,
+            package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            bytes_downloaded=1000,
+            stage=StageEnum.INSTALLING,
+        )
+
+        for c, mock_sm in _make_client(load_state_return=state):
+            resp = c.get("/")
+            assert resp.status_code == 200
+
+        saved_state = mock_sm.save_state.call_args.args[0]
+        assert saved_state.stage == StageEnum.FAILED
+        assert saved_state.version == "1.0.0"
 
 
 # -----------------------------------------------------------------------

@@ -7,16 +7,7 @@ import httpx
 
 from updater.api.models import ReportPayload
 from updater.models.status import StageEnum
-
-
-def _format_report_version(version: Optional[str]) -> Optional[str]:
-    """Return the device-api report version with the required v prefix."""
-    if version is None:
-        return None
-    version = version.strip()
-    if not version:
-        return None
-    return version if version.startswith("v") else f"v{version}"
+from updater.utils.version import format_report_version
 
 
 class ReportService:
@@ -71,7 +62,7 @@ class ReportService:
             progress=progress,
             message=message,
             error=error,
-            version=_format_report_version(version),
+            version=format_report_version(version),
         )
 
         self.logger.debug(

@@ -20,7 +20,8 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional, List
-from datetime import datetime
+
+from updater.utils.version import normalize_version
 
 
 class VersionManager:
@@ -54,7 +55,7 @@ class VersionManager:
         Raises:
             ValueError: If version directory already exists
         """
-        version_dir = self.base_dir / f"v{version}"
+        version_dir = self.base_dir / f"v{normalize_version(version)}"
 
         if version_dir.exists():
             raise ValueError(f"Version directory already exists: {version_dir}")
@@ -208,6 +209,7 @@ class VersionManager:
             FileNotFoundError: If version directory does not exist
             OSError: If symlink update fails
         """
+        version = normalize_version(version)
         version_dir = self.base_dir / f"v{version}"
 
         if not version_dir.exists():
@@ -235,6 +237,8 @@ class VersionManager:
             FileNotFoundError: If version directory does not exist
             ValueError: If factory version is already set
         """
+        version = normalize_version(version)
+
         if self.factory_link.exists():
             raise ValueError(f"Factory version already set: {self.get_factory_version()}")
 
@@ -311,6 +315,8 @@ class VersionManager:
             ValueError: If trying to delete a protected version
             FileNotFoundError: If version directory does not exist
         """
+        version = normalize_version(version)
+
         # Safety checks
         if version == self.get_current_version():
             raise ValueError(f"Cannot delete current version: {version}")
@@ -352,6 +358,8 @@ class VersionManager:
             This should be called once during initial system setup.
             The factory version will be set as read-only to prevent modification.
         """
+        version = normalize_version(version)
+
         # Check if current version exists
         current_version = self.get_current_version()
         if not current_version:
@@ -500,6 +508,5 @@ class VersionManager:
             self.logger.error(f"Error checking factory permissions: {e}")
             return False
 
-        self.logger.debug(f"Factory version read-only status: True")
+        self.logger.debug("Factory version read-only status: True")
         return True
-

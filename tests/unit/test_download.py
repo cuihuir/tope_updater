@@ -491,6 +491,156 @@ class TestDownloadService:
             assert "Range" not in stream_call[1]["headers"]
 
     @pytest.mark.asyncio
+    async def test_download_new_package_deletes_old_pending_zip_with_different_name(
+        self, download_service, mock_state_manager
+    ):
+        """替换待安装包时，即使新旧包名不同，也应删除旧 ZIP 和旧 state。"""
+        old_state = StateFile(
+            version="0.9.0",
+            package_url="http://example.com/old.zip",
+            package_name="old.zip",
+            package_size=100,
+            package_md5="b" * 32,
+            bytes_downloaded=100,
+            stage=StageEnum.TO_INSTALL,
+        )
+        mock_state_manager.get_persistent_state.return_value = old_state
+
+        with patch.object(
+            download_service, "_download_with_resume", new_callable=AsyncMock
+        ), patch("updater.services.download.verify_md5_or_raise"), patch.object(
+            Path, "exists", return_value=False
+        ), patch.object(
+            Path, "unlink"
+        ) as mock_unlink:
+            await download_service.download_package(
+                version="1.0.0",
+                package_url="http://example.com/new.zip",
+                package_name="new.zip",
+                package_size=123,
+                package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            )
+
+        deleted_paths = [call.args for call in mock_unlink.call_args_list]
+        assert deleted_paths
+        mock_state_manager.delete_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_download_to_install_same_package_starts_fresh(
+        self, download_service, mock_state_manager
+    ):
+        """已验证待安装包即使 metadata 相同，新 download 也应清理后重新下载。"""
+        old_state = StateFile(
+            version="1.0.0",
+            package_url="http://example.com/pkg.zip",
+            package_name="pkg.zip",
+            package_size=123,
+            package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            bytes_downloaded=123,
+            stage=StageEnum.TO_INSTALL,
+        )
+        mock_state_manager.get_persistent_state.return_value = old_state
+
+        with patch.object(
+            download_service, "_download_with_resume", new_callable=AsyncMock
+        ) as mock_download, patch("updater.services.download.verify_md5_or_raise"), patch.object(
+            Path, "exists", return_value=False
+        ), patch.object(
+            Path, "unlink"
+        ) as mock_unlink:
+            await download_service.download_package(
+                version="1.0.0",
+                package_url="http://example.com/pkg.zip",
+                package_name="pkg.zip",
+                package_size=123,
+                package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            )
+
+        mock_unlink.assert_called()
+        mock_state_manager.delete_state.assert_called_once()
+        assert mock_download.await_args.kwargs["bytes_downloaded"] == 0
+
+    @pytest.mark.asyncio
+    async def test_download_progress_is_clamped_to_100(
+        self, download_service, mock_state_manager
+    ):
+        """服务器多发数据时，进度状态不能超过 100。"""
+        mock_response = AsyncMock()
+        mock_response.headers = {}
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_bytes = lambda chunk_size: async_iterator([b"x" * 150])
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock()
+
+        mock_client = AsyncMock()
+        mock_client.stream = MagicMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        mock_file_handle = AsyncMock()
+        mock_file_handle.write = AsyncMock()
+        mock_file_handle.__aenter__ = AsyncMock(return_value=mock_file_handle)
+        mock_file_handle.__aexit__ = AsyncMock()
+
+        with patch("httpx.AsyncClient", return_value=mock_client), patch(
+            "aiofiles.open", return_value=mock_file_handle
+        ):
+            with pytest.raises(ValueError, match="PACKAGE_SIZE_MISMATCH"):
+                await download_service._download_with_resume(
+                    url="http://example.com/package.zip",
+                    target_path=Path("./tmp/pkg.zip"),
+                    package_size=100,
+                    bytes_downloaded=0,
+                    version="1.0.0",
+                    package_md5="d41d8cd98f00b204e9800998ecf8427e",
+                )
+
+        progress_values = [
+            call.kwargs["progress"]
+            for call in mock_state_manager.update_status.call_args_list
+            if call.kwargs["stage"] == StageEnum.DOWNLOADING
+        ]
+        assert progress_values
+        assert max(progress_values) == 100
+
+    @pytest.mark.asyncio
+    async def test_download_initial_progress_is_clamped_to_100(
+        self, download_service, mock_state_manager
+    ):
+        """异常 state 或文件大小超出声明大小时，初始进度也不能超过 100。"""
+        persistent_state = StateFile(
+            version="1.0.0",
+            package_url="http://example.com/pkg.zip",
+            package_name="pkg.zip",
+            package_size=100,
+            package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            bytes_downloaded=150,
+            stage=StageEnum.DOWNLOADING,
+        )
+        mock_state_manager.get_persistent_state.return_value = persistent_state
+        mock_stat = MagicMock()
+        mock_stat.st_size = 150
+
+        with patch.object(
+            download_service, "_download_with_resume", new_callable=AsyncMock
+        ), patch("updater.services.download.verify_md5_or_raise"), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
+            Path, "stat", return_value=mock_stat
+        ):
+            await download_service.download_package(
+                version="1.0.0",
+                package_url="http://example.com/pkg.zip",
+                package_name="pkg.zip",
+                package_size=100,
+                package_md5="d41d8cd98f00b204e9800998ecf8427e",
+            )
+
+        first_call = mock_state_manager.update_status.call_args_list[0]
+        assert first_call.kwargs["stage"] == StageEnum.DOWNLOADING
+        assert first_call.kwargs["progress"] == 100
+
+    @pytest.mark.asyncio
     async def test_download_without_content_length_header(self, download_service, mock_state_manager):
         """Test download when server doesn't provide Content-Length header.
 
