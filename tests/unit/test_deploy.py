@@ -32,6 +32,7 @@ class TestDeployService:
         manager = MagicMock()
         manager.create_version_dir = MagicMock(return_value=Path("/tmp/versions/v1.0.0"))
         manager.promote_version = MagicMock()
+        manager.prune_old_versions = MagicMock(return_value=[])
         manager.rollback_to_previous = MagicMock(return_value="0.9.0")
         manager.rollback_to_factory = MagicMock(return_value="0.0.1")
         return manager
@@ -671,6 +672,71 @@ class TestDeployService:
                             await deploy_service.deploy_package(package_path, "1.0.0")
 
         assert events.index("verify") < events.index("promote") < events.index("start")
+
+    @pytest.mark.asyncio
+    async def test_deploy_package_prunes_old_versions_after_services_start(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """成功部署后应清理历史版本，且发生在服务启动之后。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        events = []
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        async def start_side_effect(modules):
+            events.append("start")
+
+        def prune_side_effect():
+            events.append("prune")
+            return ["0.1.1"]
+
+        mock_version_manager.prune_old_versions.side_effect = prune_side_effect
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock):
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock) as mock_start:
+                            mock_start.side_effect = start_side_effect
+
+                            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        mock_version_manager.prune_old_versions.assert_called_once_with()
+        assert events == ["start", "prune"]
+
+    @pytest.mark.asyncio
+    async def test_deploy_package_prune_failure_does_not_fail_update(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """历史版本清理失败只告警，不影响 OTA 成功。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        mock_version_manager.prune_old_versions.side_effect = OSError(
+            "permission denied"
+        )
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock):
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock):
+                            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        final_call = deploy_service.state_manager.update_status.call_args_list[-1]
+        assert final_call.kwargs["stage"] == StageEnum.SUCCESS
 
 
 @pytest.mark.unit

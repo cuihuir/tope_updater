@@ -227,6 +227,13 @@ class DeployService:
 
                 await self._start_services(modules_with_services)
 
+            try:
+                deleted_versions = self.version_manager.prune_old_versions()
+                if deleted_versions:
+                    self.logger.info(f"Pruned old versions: {deleted_versions}")
+            except Exception as prune_error:
+                self.logger.warning(f"Failed to prune old versions: {prune_error}")
+
             # Step 9: Report success
             self.logger.info(f"Deployment complete for version {version}")
             self.state_manager.update_status(

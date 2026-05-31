@@ -336,6 +336,51 @@ class VersionManager:
         shutil.rmtree(version_dir)
         self.logger.info(f"Deleted version: {version}")
 
+    def prune_old_versions(self, keep_extra: int = 0) -> List[str]:
+        """Delete old unprotected version directories.
+
+        Always keeps versions referenced by current, previous, and factory.
+        Optionally keeps the newest extra unprotected versions.
+
+        Args:
+            keep_extra: Number of additional unprotected versions to keep.
+
+        Returns:
+            Deleted version strings, sorted from oldest to newest.
+        """
+        keep_extra = max(0, keep_extra)
+        protected = {
+            version
+            for version in (
+                self.get_current_version(),
+                self.get_previous_version(),
+                self.get_factory_version(),
+            )
+            if version
+        }
+
+        candidates = []
+        for item in self.base_dir.iterdir():
+            if item.is_symlink() or not item.is_dir() or not item.name.startswith("v"):
+                continue
+            version = item.name[1:]
+            if version in protected:
+                continue
+            candidates.append(version)
+
+        candidates.sort()
+        to_delete = candidates[: max(0, len(candidates) - keep_extra)]
+        deleted = []
+        for version in to_delete:
+            self.delete_version(version)
+            deleted.append(version)
+
+        if deleted:
+            self.logger.info(f"Pruned old versions: {deleted}")
+        else:
+            self.logger.info("No old versions to prune")
+        return deleted
+
     def create_factory_version(self, version: str) -> Path:
         """Create factory version from current version.
 

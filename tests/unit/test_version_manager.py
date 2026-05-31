@@ -289,6 +289,49 @@ class TestVersionManager:
         with pytest.raises(FileNotFoundError, match="not found"):
             version_manager.delete_version("9.9.9")
 
+    def test_prune_old_versions_keeps_current_previous_and_factory(self, version_manager):
+        """自动清理应只删除非 current/previous/factory 的旧版本。"""
+        for version in ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"]:
+            version_manager.create_version_dir(version)
+        version_manager.set_factory_version("1.0.0")
+        version_manager.promote_version("1.3.0")
+        version_manager.promote_version("1.4.0")
+
+        deleted = version_manager.prune_old_versions()
+
+        assert deleted == ["1.1.0", "1.2.0"]
+        assert version_manager.list_versions() == ["1.0.0", "1.3.0", "1.4.0"]
+        assert version_manager.get_factory_version() == "1.0.0"
+        assert version_manager.get_previous_version() == "1.3.0"
+        assert version_manager.get_current_version() == "1.4.0"
+
+    def test_prune_old_versions_can_keep_extra_recent_unprotected_versions(
+        self, version_manager
+    ):
+        """可选择额外保留最近的非保护版本。"""
+        for version in ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]:
+            version_dir = version_manager.create_version_dir(version)
+            (version_dir / "app.py").write_text(version)
+        version_manager.promote_version("1.2.0")
+        version_manager.promote_version("1.3.0")
+
+        deleted = version_manager.prune_old_versions(keep_extra=1)
+
+        assert deleted == ["1.0.0"]
+        assert version_manager.list_versions() == ["1.1.0", "1.2.0", "1.3.0"]
+
+    def test_prune_old_versions_ignores_non_version_directories(self, version_manager):
+        """清理只处理 v* 版本目录，不碰其他目录。"""
+        version_manager.create_version_dir("1.0.0")
+        version_manager.create_version_dir("1.1.0")
+        (version_manager.base_dir / "cache").mkdir()
+        version_manager.promote_version("1.1.0")
+
+        deleted = version_manager.prune_old_versions()
+
+        assert deleted == ["1.0.0"]
+        assert (version_manager.base_dir / "cache").exists()
+
     def test_full_upgrade_workflow(self, version_manager):
         """Test complete upgrade workflow with rollback capability."""
         # Step 1: Initial setup with factory version
