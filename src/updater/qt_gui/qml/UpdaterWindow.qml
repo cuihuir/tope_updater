@@ -15,13 +15,16 @@ Window {
         color: "#101418"
 
         Row {
-            anchors.centerIn: parent
-            width: Math.min(parent.width * 0.84, 900)
-            height: Math.min(parent.height * 0.72, 360)
-            spacing: 48
+            anchors.left: parent.left
+            anchors.leftMargin: Math.max(24, parent.width * 0.035)
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - anchors.leftMargin - Math.max(24, parent.width * 0.035)
+            height: Math.min(parent.height * 0.74, 326)
+            spacing: Math.max(28, parent.width * 0.035)
 
             Image {
-                width: Math.min(parent.width * 0.32, 260)
+                id: logoColumn
+                width: Math.min(parent.width * 0.26, 260)
                 height: parent.height
                 anchors.verticalCenter: parent.verticalCenter
                 source: "../assets/tope-logo-en.svg"
@@ -31,9 +34,10 @@ Window {
             }
 
             Column {
-                width: parent.width - parent.spacing - Math.min(parent.width * 0.32, 260)
+                id: statusColumn
+                width: parent.width - logoColumn.width - actionColumn.width - parent.spacing * 2
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 28
+                spacing: 20
 
                 Text {
                     width: parent.width
@@ -42,7 +46,7 @@ Window {
                         : "System Update"
                     color: "#F4F7FA"
                     font.pixelSize: 34
-                    horizontalAlignment: Text.AlignHCenter
+                    horizontalAlignment: Text.AlignLeft
                     wrapMode: Text.WordWrap
                 }
 
@@ -51,8 +55,10 @@ Window {
                     text: progressModel.error.length > 0 ? progressModel.error : progressModel.message
                     color: progressModel.stage === "failed" ? "#FF6B6B" : "#B8C2CC"
                     font.pixelSize: 22
-                    horizontalAlignment: Text.AlignHCenter
+                    horizontalAlignment: Text.AlignLeft
                     wrapMode: Text.WordWrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
                 }
 
                 Rectangle {
@@ -74,31 +80,42 @@ Window {
                     text: progressModel.progress + "%"
                     color: "#F4F7FA"
                     font.pixelSize: 28
-                    horizontalAlignment: Text.AlignHCenter
+                    horizontalAlignment: Text.AlignLeft
+                }
+            }
+
+            Column {
+                id: actionColumn
+                width: Math.max(190, Math.min(parent.width * 0.20, 240))
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 18
+                visible: progressModel.terminal
+
+                Item {
+                    width: parent.width
+                    height: 1
                 }
 
                 Text {
                     width: parent.width
-                    visible: progressModel.terminal
                     text: "Entering system in " + progressModel.countdownSeconds + "s"
                     color: "#B8C2CC"
-                    font.pixelSize: 22
+                    font.pixelSize: 20
                     horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
                 }
 
                 Rectangle {
-                    visible: progressModel.terminal
-                    width: 220
+                    width: parent.width
                     height: 56
                     radius: 8
                     color: "#F4F7FA"
-                    anchors.horizontalCenter: parent.horizontalCenter
 
                     Text {
                         anchors.centerIn: parent
                         text: "Enter System"
                         color: "#101418"
-                        font.pixelSize: 22
+                        font.pixelSize: 20
                         font.bold: true
                     }
 

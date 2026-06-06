@@ -7,7 +7,8 @@ LOCK_PATH="${TOPE_DISPLAY_SWITCHER_LOCK:-/run/tope-display-switcher.lock}"
 TIMEOUT="${TOPE_DISPLAY_SWITCHER_TIMEOUT:-10}"
 INTERVAL="${TOPE_DISPLAY_SWITCHER_INTERVAL:-0.2}"
 QUIET_CONSOLE="${TOPE_DISPLAY_SWITCHER_QUIET_CONSOLE:-1}"
-CONSOLE_TTYS="${TOPE_DISPLAY_SWITCHER_CONSOLE_TTYS:-/dev/tty1 /dev/tty3 /dev/tty4 /dev/tty5 /dev/tty6}"
+CONSOLE_TTYS="${TOPE_DISPLAY_SWITCHER_CONSOLE_TTYS:-/dev/tty1 /dev/tty3 /dev/tty4 /dev/tty5 /dev/tty6 /dev/tty9}"
+RESCUE_TTYS="${TOPE_DISPLAY_SWITCHER_RESCUE_TTYS:-/dev/tty9}"
 CONSOLE_GETTY_SERVICE="${TOPE_DISPLAY_SWITCHER_CONSOLE_GETTY_SERVICE:-getty@tty9.service}"
 
 log() {
@@ -67,6 +68,20 @@ restore_console() {
         >"$tty" 2>/dev/null || true
     fi
     printf '\033c\033[?25h' >"$tty" 2>/dev/null || true
+  done
+}
+
+restore_rescue_console() {
+  [ "$QUIET_CONSOLE" = "1" ] || return 0
+
+  local tty
+  for tty in $RESCUE_TTYS; do
+    [ -w "$tty" ] || continue
+    if command -v setterm >/dev/null 2>&1; then
+      setterm -cursor on -blank 0 -powersave off -powerdown 0 \
+        >"$tty" 2>/dev/null || true
+    fi
+    printf '\033[?25h' >"$tty" 2>/dev/null || true
   done
 }
 
@@ -133,6 +148,7 @@ show_updater() {
   systemctl start "$UPDATER_GUI_SERVICE"
   wait_active "$UPDATER_GUI_SERVICE"
   quiet_console
+  restore_rescue_console
 }
 
 show_printer() {
@@ -144,6 +160,7 @@ show_printer() {
   systemctl start "$PRINTER_GUI_SERVICE"
   wait_active "$PRINTER_GUI_SERVICE"
   quiet_console
+  restore_rescue_console
 }
 
 show_console() {

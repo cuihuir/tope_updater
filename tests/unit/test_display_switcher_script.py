@@ -126,3 +126,19 @@ exit 0
 
     assert result.returncode != 0
     assert "both display services are active" in result.stderr
+
+def test_quiet_console_default_includes_rescue_tty():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert (
+        'CONSOLE_TTYS="${TOPE_DISPLAY_SWITCHER_CONSOLE_TTYS:-'
+        '/dev/tty1 /dev/tty3 /dev/tty4 /dev/tty5 /dev/tty6 /dev/tty9}"'
+    ) in source
+    assert 'RESCUE_TTYS="${TOPE_DISPLAY_SWITCHER_RESCUE_TTYS:-/dev/tty9}"' in source
+
+def test_gui_transitions_restore_rescue_tty_after_target_is_active():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "restore_rescue_console()" in source
+    assert "wait_active \"$UPDATER_GUI_SERVICE\"\n  quiet_console\n  restore_rescue_console" in source
+    assert "wait_active \"$PRINTER_GUI_SERVICE\"\n  quiet_console\n  restore_rescue_console" in source

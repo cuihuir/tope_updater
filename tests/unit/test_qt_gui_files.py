@@ -59,3 +59,13 @@ def test_qml_window_shows_left_english_logo():
 
     logo = ROOT / "src" / "updater" / "qt_gui" / "assets" / "tope-logo-en.svg"
     assert logo.exists()
+
+def test_qml_terminal_layout_uses_horizontal_action_column():
+    source = (
+        ROOT / "src" / "updater" / "qt_gui" / "qml" / "UpdaterWindow.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "id: logoColumn" in source
+    assert "id: statusColumn" in source
+    assert "id: actionColumn" in source
+    assert "width: Math.max(190, Math.min(parent.width * 0.20, 240))" in source
