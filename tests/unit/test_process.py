@@ -320,6 +320,29 @@ class TestProcessManager:
                 )
 
     @pytest.mark.asyncio
+    async def test_wait_for_service_stable_rejects_crash_loop_after_active(
+        self, process_manager
+    ):
+        """A service must remain active for the stable window after startup."""
+        status_sequence = [
+            ServiceStatus.ACTIVE,
+            ServiceStatus.FAILED,
+        ]
+
+        with patch.object(
+            process_manager,
+            "get_service_status",
+            side_effect=status_sequence,
+        ):
+            with pytest.raises(RuntimeError, match="SERVICE_UNSTABLE"):
+                await process_manager.wait_for_service_stable(
+                    "printer-gui-eglfs.service",
+                    stable_for=0.05,
+                    timeout=1,
+                    check_interval=0.01,
+                )
+
+    @pytest.mark.asyncio
     async def test_wait_for_service_stopped_accepts_inactive(self, process_manager):
         """Test wait_for_service_stopped accepts inactive as stopped."""
         with patch.object(

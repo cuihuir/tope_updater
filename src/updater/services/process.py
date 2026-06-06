@@ -30,6 +30,7 @@ class ProcessManager:
     STOP_TIMEOUT = 10
     START_TIMEOUT = 30
     STATUS_CHECK_INTERVAL = 0.5
+    STABLE_START_SECONDS = 5.0
 
     def __init__(self):
         """Initialize process manager."""
@@ -325,6 +326,49 @@ class ProcessManager:
                 )
 
             # Wait before next check
+            await asyncio.sleep(check_interval)
+
+    async def wait_for_service_stable(
+        self,
+        service_name: str,
+        stable_for: float = STABLE_START_SECONDS,
+        timeout: float = START_TIMEOUT,
+        check_interval: float = STATUS_CHECK_INTERVAL,
+    ) -> None:
+        """Wait until a service remains active for a continuous stable window."""
+        self.logger.debug(
+            f"Waiting for {service_name} to remain active for {stable_for}s "
+            f"(timeout={timeout}s)"
+        )
+
+        loop = asyncio.get_event_loop()
+        start_time = loop.time()
+        active_since: float | None = None
+
+        while True:
+            current_status = await self.get_service_status(service_name)
+            now = loop.time()
+
+            if current_status == ServiceStatus.ACTIVE:
+                if active_since is None:
+                    active_since = now
+                if now - active_since >= stable_for:
+                    self.logger.debug(
+                        f"Service {service_name} remained active for {stable_for}s"
+                    )
+                    return
+            elif active_since is not None:
+                raise RuntimeError(
+                    f"SERVICE_UNSTABLE: {service_name} left active state "
+                    f"during startup stability check (current: {current_status.value})"
+                )
+
+            if now - start_time >= timeout:
+                raise asyncio.TimeoutError(
+                    f"Service {service_name} did not remain active for {stable_for}s "
+                    f"within {timeout}s (current: {current_status.value})"
+                )
+
             await asyncio.sleep(check_interval)
 
     async def wait_for_service_stopped(

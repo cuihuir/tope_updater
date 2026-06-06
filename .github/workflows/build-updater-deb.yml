@@ -1,0 +1,71 @@
+name: Build updater deb
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-arm64-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build fat deb in arm64 container
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker run --rm --platform linux/arm64 \
+            -e VERSION="${VERSION}" \
+            -v "${PWD}:/repo" \
+            -v "${PWD}/dist:/dist" \
+            arm64v8/python:3.11-bookworm \
+            bash -euxo pipefail -c '
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates dpkg-dev rsync
+              rm -rf /tmp/tope-updater-source
+              mkdir -p /tmp/tope-updater-source
+              rsync -a \
+                --exclude tmp \
+                --exclude logs \
+                --exclude backups \
+                --exclude __pycache__ \
+                --exclude "*.pyc" \
+                /repo/src /repo/deploy /repo/requirements.txt /repo/pyproject.toml \
+                /tmp/tope-updater-source/
+              python3 -m venv /tmp/tope-updater-source/.venv
+              /tmp/tope-updater-source/.venv/bin/python -m pip install \
+                --no-cache-dir \
+                -r /tmp/tope-updater-source/requirements.txt
+              python3 /repo/scripts/build_updater_deb.py \
+                --source-root /tmp/tope-updater-source \
+                --version "${VERSION#v}" \
+                --package-revision 1 \
+                --arch arm64 \
+                --output-dir /dist
+            '
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tope-updater-deb
+          path: dist/*.deb
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb

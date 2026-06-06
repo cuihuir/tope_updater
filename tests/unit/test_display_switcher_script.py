@@ -21,6 +21,7 @@ def _run_switcher(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
         "TOPE_DISPLAY_SWITCHER_LOCK": str(tmp_path / "display.lock"),
         "TOPE_DISPLAY_SWITCHER_TIMEOUT": "1",
         "TOPE_DISPLAY_SWITCHER_INTERVAL": "0.01",
+        "TOPE_DISPLAY_SWITCHER_QUIET_CONSOLE": "0",
     }
     return subprocess.run(
         [str(SCRIPT), *args],
@@ -49,6 +50,9 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert calls.read_text(encoding="utf-8").splitlines() == [
+        "disable --now getty@tty1.service",
+        "reset-failed getty@tty1.service",
+        "enable --now getty@tty9.service",
         "stop printer-gui-eglfs.service",
         "is-active printer-gui-eglfs.service",
         "reset-failed printer-gui-eglfs.service",
@@ -77,6 +81,36 @@ exit 0
     assert "reset-failed tope-updater-gui.service" in calls.read_text(
         encoding="utf-8"
     )
+    assert "disable --now getty@tty1.service" in calls.read_text(encoding="utf-8")
+
+def test_show_console_stops_guis_and_starts_tty_login(tmp_path):
+    calls = tmp_path / "calls"
+    _write_fake_systemctl(
+        tmp_path,
+        f"""#!/usr/bin/env bash
+echo "$*" >> "{calls}"
+if [ "$1" = "is-active" ]; then
+  if [ "$2" = "tope-updater-gui.service" ]; then echo inactive; exit 3; fi
+  if [ "$2" = "printer-gui-eglfs.service" ]; then echo inactive; exit 3; fi
+  if [ "$2" = "getty@tty9.service" ]; then echo active; exit 0; fi
+fi
+exit 0
+""",
+    )
+
+    result = _run_switcher(tmp_path, "show", "console")
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "stop tope-updater-gui.service",
+        "is-active tope-updater-gui.service",
+        "reset-failed tope-updater-gui.service",
+        "stop printer-gui-eglfs.service",
+        "is-active printer-gui-eglfs.service",
+        "reset-failed printer-gui-eglfs.service",
+        "enable --now getty@tty9.service",
+        "is-active getty@tty9.service",
+    ]
 
 
 def test_status_fails_when_both_guis_are_active(tmp_path):

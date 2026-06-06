@@ -1,0 +1,15 @@
+[Unit]
+Description=TOPE Physical Console Rescue Hotkey
+After=systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tope-console-hotkey
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tope-console-hotkey
+
+[Install]
+WantedBy=multi-user.target

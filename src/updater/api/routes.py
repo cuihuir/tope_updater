@@ -578,13 +578,14 @@ async def _update_workflow(version: str) -> None:
             message="Update failed",
             error=error,
         )
-        await reporter.report_progress(
-            stage=StageEnum.FAILED,
-            progress=0,
-            message="Update failed",
-            error=error,
-            version=version,
-        )
+        if "Rollback completed." not in str(e):
+            await reporter.report_progress(
+                stage=StageEnum.FAILED,
+                progress=0,
+                message="Update failed",
+                error=error,
+                version=version,
+            )
         await _wait_for_terminal_ack(65)
 
     finally:

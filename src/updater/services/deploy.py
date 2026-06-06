@@ -34,6 +34,7 @@ from updater.services.state_manager import StateManager
 from updater.services.process import ProcessManager, ServiceStatus
 from updater.services.reporter import ReportService
 from updater.services.version_manager import VersionManager
+from updater.utils.version import normalize_version
 
 
 class DeployService:
@@ -59,6 +60,13 @@ class DeployService:
         self.process_manager = process_manager or ProcessManager()
         self.reporter = reporter
         self.version_manager = version_manager or VersionManager()
+        self.services_dir = Path("/opt/tope/services")
+        self.legacy_printer_gui_dirs = (
+            Path("/home/tope/printer-gui-qml"),
+            Path("/home/tope/printer-gui"),
+        )
+        self.systemd_dir = Path("/etc/systemd/system")
+        self.local_bin_dir = Path("/usr/local/bin")
 
     async def deploy_package(self, package_path: Path, version: str) -> None:
         """Deploy OTA package to version snapshot directory.
@@ -124,6 +132,19 @@ class DeployService:
                 raise ValueError(
                     f"Version mismatch: package claims {manifest.version}, "
                     f"expected {version}"
+                )
+
+            incremental_metadata = await self._read_incremental_metadata(package_path)
+            if incremental_metadata:
+                self.logger.info(
+                    "Incremental package detected: "
+                    f"base_ref={incremental_metadata.get('base_ref')}, "
+                    f"head_ref={incremental_metadata.get('head_ref')}"
+                )
+                self._validate_incremental_base(incremental_metadata)
+                self.version_manager.seed_version_from_current(version_dir)
+                self._apply_incremental_deletes(
+                    incremental_metadata, version_dir, external_backups
                 )
 
             # Step 3: Stop services before deployment
@@ -204,6 +225,7 @@ class DeployService:
             self.version_manager.promote_version(version)
             promoted = True
             self.logger.info(f"✓ Version {version} is now current")
+            await self._normalize_runtime_environment(manifest)
 
             # Step 8: Start services after current points at the new version
             if modules_with_services:
@@ -244,7 +266,7 @@ class DeployService:
 
             # Report to device-api
             if self.reporter:
-                await self.reporter.report_progress(
+                await self._report_terminal_progress(
                     stage=StageEnum.SUCCESS,
                     progress=100,
                     message=f"Successfully installed version {version}",
@@ -331,6 +353,77 @@ class DeployService:
             raise ValueError(f"Invalid ZIP package: {e}") from e
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid manifest.json: {e}") from e
+
+    async def _read_incremental_metadata(
+        self, package_path: Path
+    ) -> Optional[dict]:
+        """Read incremental package metadata if present."""
+        try:
+            with zipfile.ZipFile(package_path, "r") as zf:
+                if "incremental.json" not in zf.namelist():
+                    return None
+
+                with zf.open("incremental.json") as metadata_file:
+                    metadata = json.loads(metadata_file.read().decode("utf-8"))
+
+            if metadata.get("type") != "incremental":
+                raise ValueError("incremental.json type must be 'incremental'")
+            return metadata
+
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"Invalid ZIP package: {e}") from e
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid incremental.json: {e}") from e
+
+    def _validate_incremental_base(self, metadata: dict) -> None:
+        """Ensure an incremental package is applied to its declared base."""
+        base_ref = metadata.get("base_ref")
+        if not base_ref:
+            raise RuntimeError("INCREMENTAL_BASE_MISSING: incremental.json has no base_ref")
+
+        try:
+            base_version = normalize_version(str(base_ref).removeprefix("refs/tags/"))
+        except ValueError as e:
+            raise RuntimeError(
+                f"INCREMENTAL_BASE_INVALID: unsupported base_ref {base_ref!r}"
+            ) from e
+
+        current_version = self.version_manager.get_current_version()
+        if current_version != base_version:
+            raise RuntimeError(
+                "INCREMENTAL_BASE_MISMATCH: "
+                f"package base is {base_version}, current is {current_version}"
+            )
+
+    def _apply_incremental_deletes(
+        self,
+        metadata: dict,
+        version_dir: Path,
+        external_backups: dict[Path, Optional[Path]],
+    ) -> None:
+        """Apply deleted paths after seeding an incremental version snapshot."""
+        for deleted in metadata.get("deleted", []):
+            dst_path_absolute = Path(deleted)
+            dst_in_version = self._get_relative_destination(dst_path_absolute)
+            version_path = version_dir / dst_in_version
+
+            if version_path.exists() or version_path.is_symlink():
+                if version_path.is_dir() and not version_path.is_symlink():
+                    shutil.rmtree(version_path)
+                else:
+                    version_path.unlink()
+                self.logger.info(f"✓ Applied incremental delete: {version_path}")
+
+            if not str(dst_path_absolute).startswith("/opt/tope"):
+                if external_backups is not None:
+                    self._backup_external_destination(
+                        dst_path_absolute, external_backups
+                    )
+                if dst_path_absolute.exists() or dst_path_absolute.is_symlink():
+                    if dst_path_absolute.is_dir() and not dst_path_absolute.is_symlink():
+                        shutil.rmtree(dst_path_absolute)
+                    else:
+                        dst_path_absolute.unlink()
 
     async def _deploy_module_to_version(
         self,
@@ -620,11 +713,12 @@ class DeployService:
                 self.logger.info(f"Starting service: {service_name}")
                 await self.process_manager.start_service(service_name)
 
-                # Wait for service to be active
-                await self.process_manager.wait_for_service_status(
+                # systemd can report active briefly before a crash-looping
+                # service exits. Require a short stable window before success.
+                await self.process_manager.wait_for_service_stable(
                     service_name,
-                    target_status=ServiceStatus.ACTIVE,
-                    timeout=30
+                    stable_for=5,
+                    timeout=30,
                 )
                 self.logger.info(f"✓ Started {service_name}")
 
@@ -634,6 +728,124 @@ class DeployService:
                     f"SERVICE_START_FAILED: Cannot complete deployment because "
                     f"{service_name} failed to start. Error: {e}"
                 ) from e
+
+    async def _normalize_runtime_environment(self, manifest: Manifest) -> None:
+        """Prepare stable service entrypoints after current has been promoted."""
+        linked = self.version_manager.sync_service_links(self.services_dir)
+        if linked:
+            self.logger.info(f"Synced service entrypoints: {linked}")
+
+        assets_installed = False
+        assets_installed = self._migrate_printer_gui_runtime() or assets_installed
+        assets_installed = self._install_printer_gui_deploy_assets() or assets_installed
+
+        if assets_installed:
+            await self._reload_systemd()
+
+    def _migrate_printer_gui_runtime(self) -> bool:
+        """Copy legacy printer GUI venv into the stable OTA entrypoint if needed."""
+        target_venv = self.services_dir / "printer-gui" / ".venv"
+        if target_venv.exists():
+            return False
+
+        target_parent = target_venv.parent
+        if not target_parent.exists():
+            return False
+
+        for legacy_dir in self.legacy_printer_gui_dirs:
+            legacy_venv = legacy_dir / ".venv"
+            legacy_python = legacy_venv / "bin" / "python"
+            if not legacy_python.exists():
+                continue
+
+            self.logger.info(f"Migrating printer GUI runtime: {legacy_venv} -> {target_venv}")
+            shutil.copytree(legacy_venv, target_venv, symlinks=True)
+            return True
+
+        self.logger.warning(
+            f"Printer GUI runtime missing and no legacy runtime found: {target_venv}"
+        )
+        return False
+
+    def _install_printer_gui_deploy_assets(self) -> bool:
+        """Install printer GUI systemd unit and EGLFS start script when packaged."""
+        printer_gui_dir = self.services_dir / "printer-gui"
+        deploy_dir = printer_gui_dir / "deploy"
+        installed = False
+
+        service_src = deploy_dir / "printer-gui-eglfs.service"
+        if service_src.exists():
+            self.systemd_dir.mkdir(parents=True, exist_ok=True)
+            service_dst = self.systemd_dir / "printer-gui-eglfs.service"
+            shutil.copy2(service_src, service_dst)
+            self.logger.info(f"Installed systemd unit: {service_dst}")
+            installed = True
+
+        start_src = deploy_dir / "printer-gui-eglfs-start.sh"
+        if start_src.exists():
+            self.local_bin_dir.mkdir(parents=True, exist_ok=True)
+            start_dst = self.local_bin_dir / "printer-gui-eglfs-start.sh"
+            shutil.copy2(start_src, start_dst)
+            start_dst.chmod(start_dst.stat().st_mode | 0o755)
+            self.logger.info(f"Installed start script: {start_dst}")
+            installed = True
+
+        return installed
+
+    async def _reload_systemd(self) -> None:
+        """Reload systemd after managed unit files change."""
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "daemon-reload",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        if proc.returncode != 0:
+            err = stderr.decode().strip()
+            out = stdout.decode().strip()
+            raise RuntimeError(
+                "SYSTEMD_DAEMON_RELOAD_FAILED"
+                + (f": {err}" if err else "")
+                + (f" | stdout: {out}" if out else "")
+            )
+
+    async def _report_terminal_progress(
+        self,
+        stage: StageEnum,
+        progress: int,
+        message: str,
+        error: Optional[str] = None,
+        version: Optional[str] = None,
+        attempts: int = 12,
+        delay_seconds: float = 5.0,
+    ) -> None:
+        """Report a terminal OTA state until device-api accepts it once."""
+        if not self.reporter:
+            return
+
+        for attempt in range(1, attempts + 1):
+            reported = await self.reporter.report_progress(
+                stage=stage,
+                progress=progress,
+                message=message,
+                error=error,
+                version=version,
+            )
+            if reported is None or reported:
+                return
+
+            if attempt < attempts:
+                self.logger.warning(
+                    "Terminal OTA report was not accepted by device-api; "
+                    f"retrying ({attempt}/{attempts})"
+                )
+                await asyncio.sleep(delay_seconds)
+
+        self.logger.error(
+            "Terminal OTA report was not accepted by device-api after "
+            f"{attempts} attempts: stage={stage.value}, version={version}, error={error}"
+        )
 
     def _ordered_unique_service_names(self, modules_with_services: list) -> list[str]:
         """Return unique service names ordered by restart_order and declaration order."""
@@ -756,12 +968,12 @@ class DeployService:
 
             # Report rollback success to device-api
             if self.reporter:
-                await self.reporter.report_progress(
+                await self._report_terminal_progress(
                     stage=StageEnum.FAILED,
                     progress=0,
                     message=f"Rolled back to version {previous_version}",
                     error=f"ROLLBACK_LEVEL_1_SUCCESS: {previous_version}",
-                    version=manifest.version,
+                    version=previous_version,
                 )
 
             return previous_version
@@ -839,12 +1051,12 @@ class DeployService:
 
             # Report factory rollback success to device-api
             if self.reporter:
-                await self.reporter.report_progress(
+                await self._report_terminal_progress(
                     stage=StageEnum.FAILED,
                     progress=0,
                     message=f"Rolled back to factory version {factory_version}",
                     error=f"ROLLBACK_LEVEL_2_SUCCESS: {factory_version}",
-                    version=manifest.version,
+                    version=factory_version,
                 )
 
             return factory_version

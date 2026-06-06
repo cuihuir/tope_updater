@@ -23,7 +23,7 @@ CPUQuota=50%
 # Security hardening
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/tope/updater/tmp /opt/tope/updater/logs /opt/tope/updater/backups /opt/tope
+ReadWritePaths=/opt/tope/updater/tmp /opt/tope/updater/logs /opt/tope/updater/backups /opt/tope /etc/systemd/system /usr/local/bin
 NoNewPrivileges=false
 CapabilityBoundingSet=CAP_KILL CAP_FOWNER CAP_CHOWN CAP_DAC_OVERRIDE
 

@@ -65,6 +65,22 @@ class VersionManager:
 
         return version_dir
 
+    def seed_version_from_current(self, version_dir: Path) -> None:
+        """Populate a new version directory from the current snapshot."""
+        current_version = self.get_current_version()
+        if not current_version:
+            raise RuntimeError("No current version available for incremental package")
+
+        current_dir = self.base_dir / f"v{current_version}"
+        if not current_dir.exists():
+            raise RuntimeError(f"Current version directory not found: {current_dir}")
+
+        if not version_dir.exists():
+            raise FileNotFoundError(f"Version directory not found: {version_dir}")
+
+        self.logger.info(f"Seeding {version_dir} from current snapshot {current_dir}")
+        shutil.copytree(current_dir, version_dir, symlinks=True, dirs_exist_ok=True)
+
     def update_symlink(self, link_path: Path, target: Path) -> None:
         """Atomically update a symlink to point to a new target.
 
@@ -224,6 +240,38 @@ class VersionManager:
         # Step 2: Promote new version to current
         self.update_symlink(self.current_link, version_dir)
         self.logger.info(f"Promoted version to current: {version}")
+
+    def sync_service_links(
+        self,
+        services_dir: Path | str = "/opt/tope/services",
+    ) -> list[Path]:
+        """Point /opt/tope/services entries at current/services entries.
+
+        The service links intentionally target the stable current symlink instead
+        of a resolved vX directory so services follow future promotions.
+        """
+        services_root = self.current_link / "services"
+        if not services_root.exists():
+            self.logger.info("Current version has no services directory")
+            return []
+
+        services_dir = Path(services_dir)
+        services_dir.mkdir(parents=True, exist_ok=True)
+        linked: list[Path] = []
+
+        for service_dir in sorted(services_root.iterdir(), key=lambda path: path.name):
+            if not service_dir.is_dir():
+                continue
+
+            link_path = services_dir / service_dir.name
+            if link_path.exists() and not link_path.is_symlink():
+                raise OSError(f"Service path exists and is not a symlink: {link_path}")
+
+            self.update_symlink(link_path, service_dir)
+            linked.append(link_path)
+
+        self.logger.info(f"Synced {len(linked)} service links in {services_dir}")
+        return linked
 
     def set_factory_version(self, version: str) -> None:
         """Set the factory version (one-time operation).

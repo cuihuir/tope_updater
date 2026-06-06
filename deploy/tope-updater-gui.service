@@ -4,7 +4,7 @@ After=tope-updater.service dbus.socket
 Requires=tope-updater.service
 Conflicts=printer-gui-eglfs.service
 ConditionPathExists=/dev/dri/card0
-ConditionPathExists=/opt/tope/services/printer-gui-qml/.venv/bin/python
+ConditionPathExists=/opt/tope/services/printer-gui/.venv/bin/python
 
 [Service]
 Type=simple
@@ -19,7 +19,7 @@ Environment=QT_QPA_EGLFS_KMS_CONFIG=/opt/tope/updater/deploy/updater-gui-eglfs-k
 Environment=QSG_RHI_BACKEND=opengl
 Environment=QT_QPA_EGLFS_HIDECURSOR=1
 Environment=TOPE_UPDATER_PROGRESS_URL=http://127.0.0.1:12315/api/v1.0/progress
-ExecStart=/opt/tope/services/printer-gui-qml/.venv/bin/python -m updater.qt_gui.main
+ExecStart=/opt/tope/services/printer-gui/.venv/bin/python -m updater.qt_gui.main
 Restart=no
 TimeoutStopSec=5
 StandardOutput=journal

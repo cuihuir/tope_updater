@@ -88,9 +88,23 @@ echo -e "${GREEN}✓ Runtime directories created${NC}"
 echo -e "${YELLOW}Installing systemd service...${NC}"
 install -m 0644 "$SCRIPT_DIR/tope-updater.service" "$SERVICE_FILE"
 install -m 0755 "$PROJECT_ROOT/deploy/tope-display-switcher" /usr/local/bin/tope-display-switcher
+install -m 0755 "$PROJECT_ROOT/deploy/tope-console-hotkey" /usr/local/bin/tope-console-hotkey
 install -m 0644 "$PROJECT_ROOT/deploy/tope-updater-gui.service" /etc/systemd/system/tope-updater-gui.service
+install -m 0644 "$PROJECT_ROOT/deploy/tope-console-quiet.service" /etc/systemd/system/tope-console-quiet.service
+install -m 0644 "$PROJECT_ROOT/deploy/tope-console-hotkey.service" /etc/systemd/system/tope-console-hotkey.service
+install -m 0644 "$PROJECT_ROOT/deploy/99-tope-console-quiet.conf" /etc/sysctl.d/99-tope-console-quiet.conf
+mkdir -p /etc/systemd/logind.conf.d
+install -m 0644 "$PROJECT_ROOT/deploy/99-tope-rescue-tty.conf" /etc/systemd/logind.conf.d/99-tope-rescue-tty.conf
 install -m 0644 "$PROJECT_ROOT/deploy/updater-gui-eglfs-kms.json" "$INSTALL_DIR/deploy/updater-gui-eglfs-kms.json"
 systemctl daemon-reload
+systemctl disable --now \
+  getty@tty1.service getty@tty2.service getty@tty3.service \
+  getty@tty4.service getty@tty5.service getty@tty6.service || true
+systemctl enable --now getty@tty9.service || true
+systemctl enable --now tope-console-quiet.service || true
+systemctl enable --now tope-console-hotkey.service || true
+systemctl restart systemd-logind.service || true
+sysctl --system >/dev/null || true
 echo -e "${GREEN}✓ Service installed${NC}"
 
 # Set ownership

@@ -1,0 +1,12 @@
+[Unit]
+Description=TOPE Quiet Physical Console
+After=local-fs.target systemd-vconsole-setup.service
+Before=getty.target printer-gui-eglfs.service tope-updater-gui.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'dmesg -n 1 || true; printf "1 1 1 1" > /proc/sys/kernel/printk || true; for tty in /dev/tty1 /dev/tty3 /dev/tty4 /dev/tty5 /dev/tty6; do [ -w "$tty" ] || continue; if command -v setterm >/dev/null 2>&1; then setterm -cursor off -blank 0 -powersave off -powerdown 0 -clear all > "$tty" 2>/dev/null || true; fi; printf "\033c\033[?25l" > "$tty" 2>/dev/null || true; done'
+
+[Install]
+WantedBy=multi-user.target

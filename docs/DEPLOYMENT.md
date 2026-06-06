@@ -170,6 +170,121 @@ ls -la /usr/local/bin/device-api
 └── web-server -> /opt/tope/versions/current/bin/web-server
 ```
 
+### 4. 旧 GUI 设备迁移注意事项
+
+2026-06-05 在 `192.168.123.227` 部署新版 updater 时确认：
+
+- `tope-updater.service` 可以直接更新并重启，健康检查应返回 `stage=idle`。
+- 新版 `tope-updater-gui.service` 按规范从
+  `/opt/tope/services/printer-gui/.venv/bin/python` 启动。
+- 如果设备尚未完成 GUI 规范迁移，`/opt/tope/services/printer-gui` 可能不存在。
+  这种情况下首次迁移 OTA 开始前 updater-gui 可能无法显示，但 updater 会继续
+  执行 OTA。
+- 首次规范 GUI OTA 成功 promote 后，updater 会：
+  1. 创建 `/opt/tope/services/<service>` 到
+     `/opt/tope/versions/current/services/<service>` 的稳定链接；
+  2. 从旧目录 `/home/tope/printer-gui-qml/.venv` 或
+     `/home/tope/printer-gui/.venv` 迁移 `printer-gui` runtime；
+  3. 安装 GUI 包内的 `deploy/printer-gui-eglfs.service` 到
+     `/etc/systemd/system/printer-gui-eglfs.service`；
+  4. 安装 GUI 包内的 `deploy/printer-gui-eglfs-start.sh` 到
+     `/usr/local/bin/printer-gui-eglfs-start.sh`；
+  5. 执行 `systemctl daemon-reload`，然后再启动服务。
+
+部署新版 updater 后，确认以下项目：
+
+```bash
+curl -sS http://127.0.0.1:12315/api/v1.0/progress
+systemctl cat tope-updater.service | grep ReadWritePaths
+systemctl cat tope-updater-gui.service | grep /opt/tope/services/printer-gui
+grep -R "def sync_service_links\|_normalize_runtime_environment" \
+  /opt/tope/updater/src/updater/services
+```
+
+预期 `tope-updater.service` 的 `ReadWritePaths` 包含：
+
+```text
+/opt/tope /home/tope /etc/systemd/system /usr/local/bin
+```
+
+已知坑：
+
+- `printer-gui-kol` 的 `v0.4.2` tag 包 manifest 已经部署到
+  `/opt/tope/services/printer-gui`，但包内 `deploy/printer-gui-eglfs.service`
+  和 `deploy/printer-gui-eglfs-start.sh` 仍是旧路径
+  `/home/tope/printer-gui-qml`。updater 会按包内容安装这些 deploy 文件，
+  因此服务会被覆盖回旧目录，表现为 OTA 成功但界面无变化。
+- 修复方式是使用包含 `30db789 Normalize printer GUI OTA deploy paths`
+  或之后提交的新 tag 包，或者手工安装已修正的 GUI service/start script 后
+  `systemctl daemon-reload && systemctl restart printer-gui-eglfs.service`。
+- `printer-gui-kol` 的 `v0.4.5` 增量包只包含 5 个变更文件。旧 updater 会把
+  这个稀疏目录直接 promote 为 `/opt/tope/versions/current`，导致运行时缺少
+  `api_client.py`、`main.qml` 等完整文件，GUI 进入 crash-loop。新版 updater
+  会识别包内 `incremental.json`，先从 current 完整快照铺底，再覆盖变更文件和
+  应用删除列表。
+- systemd 服务如果配置了自动重启，`systemctl start` 后可能短暂显示 `active`，
+  随后才因 Python import/QML 等错误退出。新版 updater 在启动服务后要求服务
+  连续保持 active 一个稳定窗口；未通过会触发部署失败和回退。
+
+### 5. 隐藏物理 console 文字
+
+GUI 使用 EGLFS 独占显示设备，`printer-gui` 和 `updater-gui` 切换期间可能短暂
+露出底层 Linux console。2026-06-05 在 `192.168.123.227` 上确认的处理方式：
+
+- 禁用 `getty@tty1.service` 到 `getty@tty6.service`，避免常见
+  `Ctrl+Alt+F1..F6` 试探出登录提示；
+- 保留 `getty@tty9.service` 作为物理救援入口，可用 `Ctrl+Alt+F9` 切换到本机
+  CLI。有些键盘需要按 `Ctrl+Alt+Fn+F9`；
+- EGLFS 可能会关闭终端键盘模式，导致内核自己的 VT 快捷键不能直接切换。
+  因此安装并启用 `tope-console-hotkey.service`，由它读取 `/dev/input/event*`：
+  `Ctrl+Alt+F9` 在 GUI 和 console 之间往返切换，
+  `Ctrl+Alt+F10` 显式执行 `tope-display-switcher show printer`；
+- 安装 `/etc/systemd/logind.conf.d/99-tope-rescue-tty.conf`，关闭自动 VT 分配，
+  只保留显式启用的 `tty9`；
+- 安装并启用 `tope-console-quiet.service`，启动时清理 tty1/tty3/tty4/tty5/tty6、
+  隐藏光标，并把 kernel printk 降到 `1 1 1 1`；
+- 安装 `/etc/sysctl.d/99-tope-console-quiet.conf`，持久化 printk 设置；
+- `tope-display-switcher` 在每次 `show updater`、`show printer`、`blank` 前后都会
+  再清一次 tty，降低 EGLFS 交接空窗暴露 console 的概率。
+- SSH 后台登录不受这套配置影响，GUI 故障时优先通过 SSH 登录排查。
+- 如果已经能通过 SSH 登录，也可以执行 `sudo tope-display-switcher show console`。
+  该命令会停止两个 EGLFS GUI 服务，恢复 tty 光标/printk，并确保
+  `getty@tty9.service` 可用。
+- 排查完成后执行 `sudo tope-display-switcher show printer` 回到生产 GUI。该命令
+  会再次隐藏 tty1/tty3/tty4/tty5/tty6，并保留 tty9 救援入口。
+
+验证命令：
+
+```bash
+systemctl is-enabled getty@tty1.service
+systemctl is-active getty@tty1.service
+systemctl is-enabled getty@tty9.service
+systemctl is-active getty@tty9.service
+systemctl is-enabled tope-console-hotkey.service
+systemctl is-active tope-console-hotkey.service
+systemctl is-enabled tope-console-quiet.service
+systemctl is-active tope-console-quiet.service
+cat /proc/sys/kernel/printk
+sudo tope-display-switcher show updater
+sudo tope-display-switcher show printer
+sudo tope-display-switcher show console
+sudo tope-display-switcher show printer
+```
+
+预期：
+
+```text
+getty@tty1.service: disabled
+getty@tty1.service: inactive
+getty@tty9.service: enabled
+getty@tty9.service: active
+tope-console-hotkey.service: enabled
+tope-console-hotkey.service: active
+tope-console-quiet.service: enabled
+tope-console-quiet.service: active
+/proc/sys/kernel/printk: 1 1 1 1
+```
+
 ---
 
 ## 出厂版本创建

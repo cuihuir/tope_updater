@@ -32,6 +32,7 @@ class TestDeployService:
         manager = MagicMock()
         manager.create_version_dir = MagicMock(return_value=Path("/tmp/versions/v1.0.0"))
         manager.promote_version = MagicMock()
+        manager.sync_service_links = MagicMock(return_value=[])
         manager.prune_old_versions = MagicMock(return_value=[])
         manager.rollback_to_previous = MagicMock(return_value="0.9.0")
         manager.rollback_to_factory = MagicMock(return_value="0.0.1")
@@ -248,12 +249,41 @@ class TestDeployService:
     async def test_rollback_to_previous_success(self, deploy_service, sample_manifest, mock_version_manager):
         """成功回滚到上一个版本。"""
         mock_version_manager.rollback_to_previous = MagicMock(return_value="0.9.0")
+        reporter = MagicMock()
+        reporter.report_progress = AsyncMock(return_value=True)
+        deploy_service.reporter = reporter
 
         with patch.object(deploy_service, "verify_services_healthy", new_callable=AsyncMock, return_value=True):
             result = await deploy_service.rollback_to_previous(sample_manifest)
 
         assert result == "0.9.0"
         mock_version_manager.rollback_to_previous.assert_called_once()
+        final_report = reporter.report_progress.await_args_list[-1]
+        assert final_report.kwargs["error"] == "ROLLBACK_LEVEL_1_SUCCESS: 0.9.0"
+        assert final_report.kwargs["version"] == "0.9.0"
+
+    @pytest.mark.asyncio
+    async def test_rollback_to_previous_retries_terminal_report_until_success(
+        self, deploy_service, sample_manifest, mock_version_manager
+    ):
+        """回退终态报告至少要成功送达一次，避免 device-api 重启期间丢状态。"""
+        mock_version_manager.rollback_to_previous = MagicMock(return_value="0.9.0")
+        reporter = MagicMock()
+        reporter.report_progress = AsyncMock(side_effect=[True, False, True])
+        deploy_service.reporter = reporter
+
+        with patch.object(deploy_service, "verify_services_healthy", new_callable=AsyncMock, return_value=True):
+            with patch("updater.services.deploy.asyncio.sleep", new_callable=AsyncMock):
+                result = await deploy_service.rollback_to_previous(sample_manifest)
+
+        assert result == "0.9.0"
+        terminal_reports = [
+            call
+            for call in reporter.report_progress.await_args_list
+            if call.kwargs.get("error") == "ROLLBACK_LEVEL_1_SUCCESS: 0.9.0"
+        ]
+        assert len(terminal_reports) == 2
+        assert terminal_reports[-1].kwargs["version"] == "0.9.0"
 
     @pytest.mark.asyncio
     async def test_rollback_to_previous_no_previous_raises(self, deploy_service, sample_manifest, mock_version_manager):
@@ -472,6 +502,74 @@ class TestDeployService:
             await deploy_service.deploy_package(package_path, "2.0.0")
 
     @pytest.mark.asyncio
+    async def test_deploy_incremental_package_seeds_from_current_before_overlay(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """增量包应先复制 current 完整快照，再覆盖 manifest 中的变更文件。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        mock_version_manager.get_current_version = MagicMock(return_value="0.9.0")
+        mock_version_manager.seed_version_from_current = MagicMock()
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr(
+                "incremental.json",
+                '{"type":"incremental","base_ref":"v0.9.0","version":"1.0.0","deleted":[]}',
+            )
+            zf.writestr("device-api/main.py", "new content")
+            zf.writestr("config/settings.json", "new content")
+
+        events = []
+        mock_version_manager.seed_version_from_current.side_effect = (
+            lambda path: events.append(("seed", path))
+        )
+
+        async def deploy_side_effect(*args):
+            events.append(("deploy", args[1].name))
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock) as mock_deploy:
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock):
+                            mock_deploy.side_effect = deploy_side_effect
+                            await deploy_service.deploy_package(package_path, "1.0.0")
+
+        mock_version_manager.seed_version_from_current.assert_called_once_with(version_dir)
+        assert events[0] == ("seed", version_dir)
+        assert events[1][0] == "deploy"
+
+    @pytest.mark.asyncio
+    async def test_deploy_incremental_package_rejects_base_version_mismatch(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """增量包 base_ref 必须匹配设备 current，避免从错误基线合成版本。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        mock_version_manager.get_current_version = MagicMock(return_value="0.8.0")
+        mock_version_manager.seed_version_from_current = MagicMock()
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr(
+                "incremental.json",
+                '{"type":"incremental","base_ref":"v0.9.0","version":"1.0.0","deleted":[]}',
+            )
+            zf.writestr("device-api/main.py", "new content")
+            zf.writestr("config/settings.json", "new content")
+
+        with patch.object(deploy_service, "perform_two_level_rollback", new_callable=AsyncMock):
+            with pytest.raises(RuntimeError, match="INCREMENTAL_BASE_MISMATCH"):
+                await deploy_service.deploy_package(package_path, "1.0.0")
+
+        mock_version_manager.seed_version_from_current.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_deploy_package_triggers_rollback_on_failure(
         self, deploy_service, tmp_path, mock_version_manager
     ):
@@ -623,6 +721,49 @@ class TestDeployService:
             assert call.kwargs["version"] == "1.0.0"
 
     @pytest.mark.asyncio
+    async def test_deploy_package_retries_success_terminal_report_until_success(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """成功终态报告需要至少成功送达一次。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        reporter = MagicMock()
+        success_attempts = 0
+
+        async def report_side_effect(**kwargs):
+            nonlocal success_attempts
+            if kwargs.get("stage") == StageEnum.SUCCESS:
+                success_attempts += 1
+                return success_attempts > 1
+            return True
+
+        reporter.report_progress = AsyncMock(side_effect=report_side_effect)
+        deploy_service.reporter = reporter
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock):
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(deploy_service, "_start_services", new_callable=AsyncMock):
+                            with patch("updater.services.deploy.asyncio.sleep", new_callable=AsyncMock):
+                                await deploy_service.deploy_package(package_path, "1.0.0")
+
+        terminal_reports = [
+            call
+            for call in reporter.report_progress.await_args_list
+            if call.kwargs.get("stage") == StageEnum.SUCCESS
+        ]
+        assert len(terminal_reports) == 2
+        assert terminal_reports[-1].kwargs["version"] == "1.0.0"
+
+    @pytest.mark.asyncio
     async def test_deploy_package_promotes_before_starting_services(
         self, deploy_service, sample_manifest, tmp_path, mock_version_manager
     ):
@@ -672,6 +813,49 @@ class TestDeployService:
                             await deploy_service.deploy_package(package_path, "1.0.0")
 
         assert events.index("verify") < events.index("promote") < events.index("start")
+
+    @pytest.mark.asyncio
+    async def test_deploy_package_normalizes_runtime_after_promote_before_start(
+        self, deploy_service, sample_manifest, tmp_path, mock_version_manager
+    ):
+        """服务启动前应先同步 /opt/tope/services 和运行时入口。"""
+        version_dir = tmp_path / "v1.0.0"
+        version_dir.mkdir()
+        mock_version_manager.create_version_dir = MagicMock(return_value=version_dir)
+        events = []
+
+        package_path = tmp_path / "test.zip"
+        with zipfile.ZipFile(package_path, "w") as zf:
+            zf.writestr("manifest.json", sample_manifest.model_dump_json())
+            zf.writestr("device-api/main.py", "content")
+            zf.writestr("config/settings.json", "content")
+
+        mock_version_manager.promote_version.side_effect = lambda version: events.append(
+            "promote"
+        )
+
+        async def normalize_side_effect(manifest):
+            events.append("normalize")
+
+        async def start_side_effect(modules):
+            events.append("start")
+
+        with patch.object(deploy_service, "_deploy_module_to_version", new_callable=AsyncMock):
+            with patch.object(deploy_service, "_run_post_cmds", new_callable=AsyncMock):
+                with patch.object(deploy_service, "_verify_deployment", new_callable=AsyncMock):
+                    with patch.object(deploy_service, "_stop_services", new_callable=AsyncMock):
+                        with patch.object(
+                            deploy_service,
+                            "_normalize_runtime_environment",
+                            new_callable=AsyncMock,
+                        ) as mock_normalize:
+                            with patch.object(deploy_service, "_start_services", new_callable=AsyncMock) as mock_start:
+                                mock_normalize.side_effect = normalize_side_effect
+                                mock_start.side_effect = start_side_effect
+
+                                await deploy_service.deploy_package(package_path, "1.0.0")
+
+        assert events == ["promote", "normalize", "start"]
 
     @pytest.mark.asyncio
     async def test_deploy_package_prunes_old_versions_after_services_start(
@@ -737,6 +921,55 @@ class TestDeployService:
 
         final_call = deploy_service.state_manager.update_status.call_args_list[-1]
         assert final_call.kwargs["stage"] == StageEnum.SUCCESS
+
+    def test_migrate_printer_gui_runtime_copies_legacy_venv(
+        self, deploy_service, tmp_path
+    ):
+        """规范入口缺少 .venv 时，应从旧 GUI 目录迁移 runtime。"""
+        services_dir = tmp_path / "opt" / "tope" / "services"
+        stable_gui = services_dir / "printer-gui"
+        stable_gui.mkdir(parents=True)
+        legacy_gui = tmp_path / "home" / "tope" / "printer-gui-qml"
+        legacy_python = legacy_gui / ".venv" / "bin" / "python"
+        legacy_python.parent.mkdir(parents=True)
+        legacy_python.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+        deploy_service.services_dir = services_dir
+        deploy_service.legacy_printer_gui_dirs = (legacy_gui,)
+
+        assert deploy_service._migrate_printer_gui_runtime()
+        assert (stable_gui / ".venv" / "bin" / "python").read_text(
+            encoding="utf-8"
+        ) == "#!/usr/bin/env python3\n"
+
+    def test_install_printer_gui_deploy_assets_copies_systemd_and_start_script(
+        self, deploy_service, tmp_path
+    ):
+        """GUI 包携带的 deploy 文件应安装到系统入口位置。"""
+        services_dir = tmp_path / "opt" / "tope" / "services"
+        stable_gui = services_dir / "printer-gui"
+        deploy_dir = stable_gui / "deploy"
+        deploy_dir.mkdir(parents=True)
+        (deploy_dir / "printer-gui-eglfs.service").write_text(
+            "[Unit]\nDescription=test\n", encoding="utf-8"
+        )
+        start_script = deploy_dir / "printer-gui-eglfs-start.sh"
+        start_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        start_script.chmod(0o644)
+
+        systemd_dir = tmp_path / "etc" / "systemd" / "system"
+        local_bin_dir = tmp_path / "usr" / "local" / "bin"
+        deploy_service.services_dir = services_dir
+        deploy_service.systemd_dir = systemd_dir
+        deploy_service.local_bin_dir = local_bin_dir
+
+        assert deploy_service._install_printer_gui_deploy_assets()
+        assert (systemd_dir / "printer-gui-eglfs.service").read_text(
+            encoding="utf-8"
+        ) == "[Unit]\nDescription=test\n"
+        installed_start = local_bin_dir / "printer-gui-eglfs-start.sh"
+        assert installed_start.read_text(encoding="utf-8") == "#!/usr/bin/env bash\n"
+        assert installed_start.stat().st_mode & 0o111
 
 
 @pytest.mark.unit

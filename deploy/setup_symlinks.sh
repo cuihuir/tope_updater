@@ -88,8 +88,17 @@ echo "创建 /opt/tope/services 下的符号链接..."
 
 mkdir -p "$SERVICES_DIR"
 
-# 遍历当前版本的服务目录
-for service_dir in "$CURRENT_VERSION"/*; do
+# 遍历 current/services 下的服务目录。链接必须指向 current，而不是解析后的
+# 版本目录，否则 promote 新版本后 /opt/tope/services 仍会停在旧版本。
+if [ -d "$CURRENT_VERSION/services" ]; then
+    SERVICE_ROOT="$CURRENT_VERSION/services"
+    SERVICE_LINK_ROOT="$CURRENT_LINK/services"
+else
+    SERVICE_ROOT="$CURRENT_VERSION"
+    SERVICE_LINK_ROOT="$CURRENT_LINK"
+fi
+
+for service_dir in "$SERVICE_ROOT"/*; do
     if [ -d "$service_dir" ]; then
         service_name=$(basename "$service_dir")
         symlink_path="$SERVICES_DIR/$service_name"
@@ -100,8 +109,8 @@ for service_dir in "$CURRENT_VERSION"/*; do
         fi
 
         # 创建新链接
-        ln -s "$service_dir" "$symlink_path"
-        echo "  ✓ $service_name -> $service_dir"
+        ln -s "$SERVICE_LINK_ROOT/$service_name" "$symlink_path"
+        echo "  ✓ $service_name -> $SERVICE_LINK_ROOT/$service_name"
     fi
 done
 

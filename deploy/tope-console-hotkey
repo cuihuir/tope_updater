@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Listen for the rescue console hotkey on Linux input devices."""
+
+from __future__ import annotations
+
+import glob
+import os
+import selectors
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+EV_KEY = 0x01
+KEY_LEFTCTRL = 29
+KEY_RIGHTCTRL = 97
+KEY_LEFTALT = 56
+KEY_RIGHTALT = 100
+KEY_F9 = 67
+KEY_F10 = 68
+
+EVENT_STRUCT = struct.Struct("llHHI")
+INPUT_DEVICES = "/dev/input/event*"
+SWITCHER = "/usr/local/bin/tope-display-switcher"
+PRINTER_GUI_SERVICE = "printer-gui-eglfs.service"
+TRIGGER_COOLDOWN_SECONDS = 5.0
+
+
+def log(message: str) -> None:
+    print(f"[tope-console-hotkey] {message}", flush=True)
+
+
+def open_input_devices() -> dict[int, Path]:
+    devices: dict[int, Path] = {}
+    for path_text in sorted(glob.glob(INPUT_DEVICES)):
+        path = Path(path_text)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError as exc:
+            log(f"skipping {path}: {exc}")
+            continue
+        devices[fd] = path
+        log(f"listening on {path}")
+    return devices
+
+
+def run_display_switch(target: str) -> None:
+    log(f"hotkey pressed; switching to {target}")
+    subprocess.run([SWITCHER, "show", target], check=False)
+
+
+def is_printer_gui_active() -> bool:
+    return (
+        subprocess.run(
+            ["systemctl", "is-active", "--quiet", PRINTER_GUI_SERVICE],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def toggle_rescue_console() -> None:
+    if is_printer_gui_active():
+        run_display_switch("console")
+    else:
+        run_display_switch("printer")
+
+
+def is_rescue_hotkey(pressed_keys: set[int]) -> bool:
+    ctrl_pressed = bool(pressed_keys & {KEY_LEFTCTRL, KEY_RIGHTCTRL})
+    alt_pressed = bool(pressed_keys & {KEY_LEFTALT, KEY_RIGHTALT})
+    return ctrl_pressed and alt_pressed and KEY_F9 in pressed_keys
+
+
+def is_printer_hotkey(pressed_keys: set[int]) -> bool:
+    ctrl_pressed = bool(pressed_keys & {KEY_LEFTCTRL, KEY_RIGHTCTRL})
+    alt_pressed = bool(pressed_keys & {KEY_LEFTALT, KEY_RIGHTALT})
+    return ctrl_pressed and alt_pressed and KEY_F10 in pressed_keys
+
+
+def main() -> int:
+    devices = open_input_devices()
+    if not devices:
+        log("no readable input devices")
+        return 1
+
+    selector = selectors.DefaultSelector()
+    for fd, path in devices.items():
+        selector.register(fd, selectors.EVENT_READ, path)
+
+    pressed_keys: set[int] = set()
+    triggered_hotkeys: set[int] = set()
+    last_trigger = 0.0
+
+    while True:
+        for key, _ in selector.select(timeout=30):
+            fd = key.fd
+            try:
+                data = os.read(fd, EVENT_STRUCT.size * 32)
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                log(f"lost {key.data}: {exc}")
+                selector.unregister(fd)
+                os.close(fd)
+                continue
+
+            for offset in range(0, len(data) - EVENT_STRUCT.size + 1, EVENT_STRUCT.size):
+                _, _, event_type, code, value = EVENT_STRUCT.unpack_from(data, offset)
+                if event_type != EV_KEY:
+                    continue
+                if value:
+                    pressed_keys.add(code)
+                else:
+                    pressed_keys.discard(code)
+                    triggered_hotkeys.discard(code)
+                    continue
+
+                now = time.monotonic()
+                if (
+                    value == 1
+                    and KEY_F9 not in triggered_hotkeys
+                    and is_rescue_hotkey(pressed_keys)
+                    and now - last_trigger >= TRIGGER_COOLDOWN_SECONDS
+                ):
+                    last_trigger = now
+                    triggered_hotkeys.add(KEY_F9)
+                    toggle_rescue_console()
+                elif (
+                    value == 1
+                    and KEY_F10 not in triggered_hotkeys
+                    and is_printer_hotkey(pressed_keys)
+                    and now - last_trigger >= TRIGGER_COOLDOWN_SECONDS
+                ):
+                    last_trigger = now
+                    triggered_hotkeys.add(KEY_F10)
+                    run_display_switch("printer")
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

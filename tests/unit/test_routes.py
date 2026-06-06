@@ -753,6 +753,59 @@ class TestUpdateWorkflow:
         mock_display.show_printer.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_update_workflow_does_not_overwrite_reported_rollback_terminal_state(
+        self, tmp_path
+    ):
+        """回退已成功上报后，route 不应再用目标版本覆盖 device-api 终态。"""
+        from updater.api.routes import _update_workflow
+
+        pkg_file = tmp_path / "pkg.zip"
+        pkg_file.write_bytes(b"fake")
+
+        with patch("updater.api.routes.StateManager") as MockSM:
+            with patch("updater.api.routes.ReportService") as MockReport:
+                with patch("updater.api.routes.DeployService") as MockDS:
+                    with patch("updater.api.routes.DisplaySwitchService") as MockDisplay:
+                        with patch("updater.api.routes.Path") as MockPath:
+                            with patch("updater.api.routes.verify_md5_or_raise"):
+                                with patch("updater.api.routes._wait_for_terminal_ack", new_callable=AsyncMock):
+                                    mock_sm = MagicMock()
+                                    persistent = MagicMock()
+                                    persistent.package_name = "pkg.zip"
+                                    persistent.package_md5 = "d41d8cd98f00b204e9800998ecf8427e"
+                                    mock_sm.get_persistent_state.return_value = persistent
+                                    MockSM.return_value = mock_sm
+
+                                    mock_report = MagicMock()
+                                    mock_report.report_progress = AsyncMock()
+                                    MockReport.return_value = mock_report
+
+                                    mock_display = MagicMock()
+                                    mock_display.show_updater = AsyncMock(return_value=True)
+                                    mock_display.show_printer = AsyncMock(return_value=True)
+                                    MockDisplay.return_value = mock_display
+
+                                    mock_path_instance = MagicMock()
+                                    mock_path_instance.exists.return_value = True
+                                    MockPath.return_value.__truediv__ = MagicMock(
+                                        return_value=mock_path_instance
+                                    )
+
+                                    mock_ds = MagicMock()
+                                    mock_ds.deploy_package = AsyncMock(
+                                        side_effect=RuntimeError(
+                                            "DEPLOYMENT_FAILED: bad\nRollback completed."
+                                        )
+                                    )
+                                    MockDS.return_value = mock_ds
+
+                                    await _update_workflow("1.0.0")
+
+        mock_sm.update_status.assert_called_once()
+        mock_report.report_progress.assert_not_awaited()
+        mock_display.show_printer.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_update_workflow_success_deletes_state_and_resets(self, tmp_path):
         """_update_workflow 成功时应删除状态并等待后重置。"""
         from updater.api.routes import _update_workflow

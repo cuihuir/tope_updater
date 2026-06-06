@@ -2,6 +2,7 @@
 
 import pytest
 import unittest.mock
+import os
 from pathlib import Path
 from unittest.mock import patch
 from updater.services.version_manager import VersionManager
@@ -178,6 +179,36 @@ class TestVersionManager:
         """Test promoting nonexistent version raises error."""
         with pytest.raises(FileNotFoundError, match="not found"):
             version_manager.promote_version("9.9.9")
+
+    def test_sync_service_links_points_to_current_services(self, version_manager, tmp_path):
+        """Service entrypoints should follow current, not a resolved version dir."""
+        version_dir = version_manager.create_version_dir("1.0.0")
+        (version_dir / "services" / "printer-gui").mkdir(parents=True)
+        (version_dir / "services" / "device-api").mkdir(parents=True)
+        version_manager.promote_version("1.0.0")
+
+        services_dir = tmp_path / "services"
+        linked = version_manager.sync_service_links(services_dir)
+
+        printer_link = services_dir / "printer-gui"
+        device_link = services_dir / "device-api"
+        assert linked == [device_link, printer_link]
+        assert printer_link.is_symlink()
+        assert device_link.is_symlink()
+        assert os.readlink(printer_link) == "../versions/current/services/printer-gui"
+        assert printer_link.resolve() == version_dir / "services" / "printer-gui"
+
+    def test_sync_service_links_noops_when_current_has_no_services_dir(
+        self, version_manager, tmp_path
+    ):
+        """Packages without services/* do not create /opt/tope/services entries."""
+        version_manager.create_version_dir("1.0.0")
+        version_manager.promote_version("1.0.0")
+
+        services_dir = tmp_path / "services"
+
+        assert version_manager.sync_service_links(services_dir) == []
+        assert not services_dir.exists()
 
     def test_set_factory_version(self, version_manager):
         """Test setting factory version."""

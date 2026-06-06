@@ -44,7 +44,7 @@ class ReportService:
         message: str,
         error: Optional[str] = None,
         version: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Send progress report to device-api.
 
         Args:
@@ -56,6 +56,9 @@ class ReportService:
 
         Note:
             Failures are logged but not raised to avoid blocking OTA operations
+
+        Returns:
+            True when device-api accepted the report, False otherwise.
         """
         payload = ReportPayload(
             stage=stage,
@@ -83,6 +86,7 @@ class ReportService:
                     f"response_body={response.text}"
                 )
                 response.raise_for_status()
+                return True
 
         except httpx.HTTPError as e:
             response = getattr(e, "response", None)
@@ -97,9 +101,11 @@ class ReportService:
                 f"Failed to report progress to device-api: {e}. "
                 f"Continuing OTA operation..."
             )
+            return False
         except Exception as e:
             self.logger.error(
                 f"Unexpected error reporting to device-api: {e}. "
                 f"payload={payload_json}",
                 exc_info=True,
             )
+            return False
