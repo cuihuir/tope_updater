@@ -46,4 +46,16 @@ def test_qml_terminal_state_has_countdown_and_ok_exit():
     assert "progressModel.countdownSeconds" in source
     assert "tickTerminalCountdown" in source
     assert "confirmExit" in source
-    assert "OK" in source
+    assert "Enter System" in source
+
+def test_qml_window_shows_left_english_logo():
+    source = (
+        ROOT / "src" / "updater" / "qt_gui" / "qml" / "UpdaterWindow.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "Image {" in source
+    assert "../assets/tope-logo-en.svg" in source
+    assert "PreserveAspectFit" in source
+
+    logo = ROOT / "src" / "updater" / "qt_gui" / "assets" / "tope-logo-en.svg"
+    assert logo.exists()

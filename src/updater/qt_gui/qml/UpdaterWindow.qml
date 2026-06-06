@@ -14,81 +14,98 @@ Window {
         rotation: 90
         color: "#101418"
 
-        Column {
+        Row {
             anchors.centerIn: parent
-            width: Math.min(parent.width * 0.72, 720)
-            spacing: 28
+            width: Math.min(parent.width * 0.84, 900)
+            height: Math.min(parent.height * 0.72, 360)
+            spacing: 48
 
-            Text {
-                width: parent.width
-                text: progressModel.stage === "failed" ? "Update Failed"
-                    : progressModel.stage === "success" ? "Update Complete"
-                    : "System Update"
-                color: "#F4F7FA"
-                font.pixelSize: 34
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
+            Image {
+                width: Math.min(parent.width * 0.32, 260)
+                height: parent.height
+                anchors.verticalCenter: parent.verticalCenter
+                source: "../assets/tope-logo-en.svg"
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
             }
 
-            Text {
-                width: parent.width
-                text: progressModel.error.length > 0 ? progressModel.error : progressModel.message
-                color: progressModel.stage === "failed" ? "#FF6B6B" : "#B8C2CC"
-                font.pixelSize: 22
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-            }
-
-            Rectangle {
-                width: parent.width
-                height: 18
-                radius: 6
-                color: "#2A3138"
-
-                Rectangle {
-                    width: parent.width * progressModel.progress / 100
-                    height: parent.height
-                    radius: 6
-                    color: progressModel.stage === "failed" ? "#FF6B6B" : "#47D18C"
-                }
-            }
-
-            Text {
-                width: parent.width
-                text: progressModel.progress + "%"
-                color: "#F4F7FA"
-                font.pixelSize: 28
-                horizontalAlignment: Text.AlignHCenter
-            }
-
-            Text {
-                width: parent.width
-                visible: progressModel.terminal
-                text: "Returning to system in " + progressModel.countdownSeconds + "s"
-                color: "#B8C2CC"
-                font.pixelSize: 22
-                horizontalAlignment: Text.AlignHCenter
-            }
-
-            Rectangle {
-                visible: progressModel.terminal
-                width: 168
-                height: 56
-                radius: 8
-                color: "#F4F7FA"
-                anchors.horizontalCenter: parent.horizontalCenter
+            Column {
+                width: parent.width - parent.spacing - Math.min(parent.width * 0.32, 260)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 28
 
                 Text {
-                    anchors.centerIn: parent
-                    text: "OK"
-                    color: "#101418"
-                    font.pixelSize: 24
-                    font.bold: true
+                    width: parent.width
+                    text: progressModel.stage === "failed" ? "Update Failed"
+                        : progressModel.stage === "success" ? "Update Complete"
+                        : "System Update"
+                    color: "#F4F7FA"
+                    font.pixelSize: 34
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
                 }
 
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: progressModel.confirmExit()
+                Text {
+                    width: parent.width
+                    text: progressModel.error.length > 0 ? progressModel.error : progressModel.message
+                    color: progressModel.stage === "failed" ? "#FF6B6B" : "#B8C2CC"
+                    font.pixelSize: 22
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 18
+                    radius: 6
+                    color: "#2A3138"
+
+                    Rectangle {
+                        width: parent.width * progressModel.progress / 100
+                        height: parent.height
+                        radius: 6
+                        color: progressModel.stage === "failed" ? "#FF6B6B" : "#47D18C"
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: progressModel.progress + "%"
+                    color: "#F4F7FA"
+                    font.pixelSize: 28
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                    width: parent.width
+                    visible: progressModel.terminal
+                    text: "Entering system in " + progressModel.countdownSeconds + "s"
+                    color: "#B8C2CC"
+                    font.pixelSize: 22
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                Rectangle {
+                    visible: progressModel.terminal
+                    width: 220
+                    height: 56
+                    radius: 8
+                    color: "#F4F7FA"
+                    anchors.horizontalCenter: parent.horizontalCenter
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Enter System"
+                        color: "#101418"
+                        font.pixelSize: 22
+                        font.bold: true
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: progressModel.confirmExit()
+                    }
                 }
             }
         }
