@@ -1,6 +1,6 @@
 # TOPE Updater — OTA Update Service
 
-用于嵌入式 3D 打印机设备的 OTA (Over-The-Air) 更新服务。提供 HTTP API，支持固件/软件的下载、验证和部署，具备版本快照回滚、SDL2 GUI 进度窗口和 systemd 集成。
+用于嵌入式 3D 打印机设备的 OTA (Over-The-Air) 更新服务。提供 HTTP API，支持固件/软件的下载、验证和部署，具备版本快照回滚、Qt/QML GUI 进度窗口和 systemd 集成。
 
 ![安装成功界面](docs/screenshots/gui_success.png)
 
@@ -20,7 +20,7 @@
 | systemd 服务管理（stop/start/status） | ✅ 完成 |
 | 持久化状态管理（state.json + 重启自愈） | ✅ 完成 |
 | Reporter 回调（device-api 进度上报） | ✅ 完成 |
-| SDL2 GUI 进度窗口（子进程隔离） | ✅ 完成 |
+| Qt/QML GUI 进度窗口（EGLFS） | ✅ 完成 |
 | 单元测试覆盖率 91.47%（214 个测试） | ✅ 完成 |
 | E2E 测试 | ⏳ 待完成 |
 
@@ -36,9 +36,60 @@
 
 - Python 3.11+
 - Linux with systemd
-- SDL2（GUI 窗口）：`sudo apt install libsdl2-dev libsdl2-ttf-dev`
+- 生产设备推荐使用 arm64 Debian/Ubuntu 系发行版
+- `printer-gui` runtime 已安装在 `/opt/tope/services/printer-gui/.venv`
+  （updater-gui 复用该 PySide6 runtime）
 
-### 安装
+### 生产安装（推荐）
+
+生产设备优先使用 GitHub Release 里的 fat deb 包。deb 内置 updater 源码、
+Python `.venv`、systemd unit、display-switcher、救援 TTY 热键和 console quiet
+配置，避免在设备上逐个联网安装 Python 依赖。
+
+```bash
+# 1. 下载最新 release 里的 arm64 deb，例如：
+wget https://github.com/cuihuir/tope_updater/releases/download/v0.1.1/tope-updater_0.1.1-1_arm64.deb
+
+# 2. 使用当前登录用户安装。安装脚本会检测 SUDO_USER，
+#    并把该用户 home 加入 tope-updater.service 的 ReadWritePaths。
+sudo apt install ./tope-updater_0.1.1-1_arm64.deb
+
+# 3. 确认服务
+systemctl status tope-updater.service
+curl -sS http://127.0.0.1:12315/api/v1.0/progress
+```
+
+安装后主要文件：
+
+```text
+/opt/tope/updater/                         # updater 程序、.venv、日志和临时目录
+/etc/systemd/system/tope-updater.service   # OTA HTTP 服务，端口 12315
+/etc/systemd/system/tope-updater-gui.service
+/usr/local/bin/tope-display-switcher       # GUI/console 显示切换
+/usr/local/bin/tope-console-hotkey         # Ctrl+Alt+F9 救援口 toggle
+```
+
+deb 安装会启用并启动：
+
+- `tope-updater.service`
+- `tope-console-quiet.service`
+- `tope-console-hotkey.service`
+- `getty@tty9.service`（救援口）
+
+### 生产安装（源码脚本）
+
+仅在没有 deb 包或需要临时调试时使用源码安装脚本。该方式会在目标设备上用 `uv`
+创建 updater 自己的 `.venv`，因此依赖设备网络和 Python 包源。
+
+```bash
+git clone git@github.com:cuihuir/tope_updater.git
+cd tope_updater
+sudo ./deploy/install.sh
+sudo systemctl start tope-updater.service
+curl -sS http://127.0.0.1:12315/api/v1.0/progress
+```
+
+### 开发安装
 
 ```bash
 # 安装依赖（uv 自动创建虚拟环境）
@@ -55,6 +106,44 @@ uv run src/updater/main.py
 ```
 
 服务启动在 `http://localhost:12315`。
+
+### 升级 updater 自身
+
+下载新版本 deb 后直接覆盖安装：
+
+```bash
+sudo apt install ./tope-updater_<version>-1_arm64.deb
+systemctl status tope-updater.service
+curl -sS http://127.0.0.1:12315/api/v1.0/progress
+```
+
+如果使用源码安装：
+
+```bash
+git pull
+sudo ./deploy/install.sh
+sudo systemctl restart tope-updater.service
+```
+
+### 构建离线 deb
+
+本仓库 tag 推送会自动触发 GitHub Actions 构建 arm64 deb 并上传到 Release：
+
+```bash
+git tag -a v0.1.2 -m "Release updater v0.1.2"
+git push origin v0.1.2
+```
+
+本地构建需要准备包含 `.venv` 的 source root：
+
+```bash
+python3 scripts/build_updater_deb.py \
+  --source-root /path/to/staged/tope-updater \
+  --version 0.1.2 \
+  --package-revision 1 \
+  --arch arm64 \
+  --output-dir dist
+```
 
 ### API 使用示例
 
@@ -128,7 +217,8 @@ POST /update   ──→ installing  ──→ success / failed ──→ (65s) 
 
 ### GUI 子进程
 
-安装触发时启动 SDL2 子进程（`GUILauncher`），与 FastAPI 主进程隔离。显示进度条、日志、倒计时及"完成安装"按钮（60s 后自动关闭）。
+安装触发时启动独立 updater-gui systemd 服务，使用 Qt/QML + EGLFS 显示进度条、
+终态倒计时和确认按钮。终态页面可手动确认进入系统，或等待倒计时自动返回。
 
 ## 测试
 
