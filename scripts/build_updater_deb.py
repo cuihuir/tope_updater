@@ -60,6 +60,23 @@ def copy_required_path(source_root: Path, rel_path: str, package_root: Path) -> 
         shutil.copy2(src, dst)
 
 
+def normalize_venv_python_links(package_root: Path) -> None:
+    venv_bin = package_root / INSTALL_ROOT.relative_to("/") / ".venv" / "bin"
+    if not venv_bin.exists():
+        raise FileNotFoundError(f"required venv bin missing: {venv_bin}")
+
+    links = {
+        "python": Path("python3"),
+        "python3": Path("/usr/bin/python3"),
+        "python3.11": Path("python3"),
+    }
+    for name, target in links.items():
+        path = venv_bin / name
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        path.symlink_to(target)
+
+
 def install_deploy_file(
     package_root: Path,
     source_root: Path,
@@ -127,7 +144,8 @@ systemctl disable --now \
 systemctl enable --now getty@tty9.service || true
 systemctl enable --now tope-console-quiet.service || true
 systemctl enable --now tope-console-hotkey.service || true
-systemctl enable --now tope-updater.service || true
+systemctl enable tope-updater.service || true
+systemctl restart tope-updater.service || true
 systemctl restart systemd-logind.service || true
 sysctl --system >/dev/null 2>&1 || true
 
@@ -168,6 +186,8 @@ def directory_size(path: Path) -> int:
 def stage_package(options: BuildOptions, package_root: Path) -> None:
     for rel_path in (".venv", "src", "deploy", "requirements.txt", "pyproject.toml"):
         copy_required_path(options.source_root, rel_path, package_root)
+
+    normalize_venv_python_links(package_root)
 
     install_deploy_file(
         package_root,
